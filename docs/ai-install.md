@@ -17,7 +17,7 @@ These settings are **secrets**:
 | `VPSW_WEBHOOK_SECRET` | Webhook signing key |
 | `VPSW_WEBHOOK_TOKEN` | Webhook bearer token |
 
-The admin account's password, the files in `/var/lib/vps-watcher/` (`admin.json`, `smtp-oauth.json`, `alerts.json`) and the people's own `.env` files count as secrets too.
+The admin account's password, the files in `/var/lib/vps-watcher/` (`admin.json`, `smtp-oauth.json`, `alerts.json`) and any release signing key (`release-signing-key.pem`) and the people's own `.env` files count as secrets too.
 
 1. **Do not read secret files.** Never run `cat`, `less`, `head`, `tail`, `grep` (without `-o` as shown below), `sed -n`, `awk`, `base64`, `cp`, `scp` or an editor on `/etc/vps-watcher/vps-watcher.env` or anything in `/var/lib/vps-watcher/`. Do not run `systemctl show -p Environment vps-watcher`, `cat /proc/<pid>/environ` or `sudo env` either: all of them reveal secrets.
 2. **Inspect settings only in these two safe ways:**
@@ -153,7 +153,8 @@ Do not include any secret value, partial value or hash in the summary.
 
 | Task | Command |
 |---|---|
-| Upgrade | `curl -fsSL https://raw.githubusercontent.com/C3ZIZ/vps-watcher/main/install.sh \| sudo sh` |
+| Upgrade | `sudo vps-watcher upgrade` (installs only signed releases, rolls back if the new version fails). Turn on daily automatic updates only if the person asks: `sudo vps-watcher set VPSW_AUTO_UPDATE true` |
+| Is an update available? | `sudo vps-watcher upgrade --check` |
 | New settings after an upgrade | `sudo grep -oE '^[A-Z_]+=' /etc/vps-watcher/vps-watcher.env.example` (key names only) |
 | Health | `systemctl is-active vps-watcher` and `journalctl -u vps-watcher -n 50 --no-pager` |
 | Forgot admin password | `sudo vps-watcher reset-admin && sudo systemctl restart vps-watcher`, then step 3 again |

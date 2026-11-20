@@ -26,12 +26,13 @@ vps-watcher is a free, open-source monitor for one Linux VPS, written in Rust. O
 | `src/net.rs` | Outbound HTTP/1 client and verified TLS (rustls with webpki roots), shared by monitors and alerts |
 | `src/web/` | axum server: `mod.rs` (accept loop, security middleware, routes), `api.rs` (JSON handlers), `assets.rs` (UI compiled into the binary) |
 | `src/auth.rs` | Admin account (argon2id), sessions, login rate limits, the localhost-only first-run setup |
+| `src/update.rs` | Daily release check, and `vps-watcher upgrade`: signed-manifest verification, swap, rollback |
 | `src/report.rs` | Averages, peaks, availability and disk forecasts; CSV |
 | `src/proxy.rs` | Caddy and nginx config generators |
 | `web/` | The UI: `index.html`, `app.js` (plain JS, no dependencies), `app.css`, `logo.svg` |
 | `packaging/` | systemd unit and the default env file the installer ships |
 | `install.sh` | Installer, upgrader and uninstaller (POSIX sh) |
-| `scripts/` | `verify.sh` (all local checks), `tag-release.sh` (releases) |
+| `scripts/` | `verify.sh` (all local checks), `tag-release.sh` (releases), `sign-release.sh` (signs a release with the offline key), `make-signing-key.sh` (one-time key creation) |
 | `docs/` | `design.md` (architecture and API), `alerts.md` (alert setup), `ai-install.md` (server setup for agents) |
 
 ## How it fits together
@@ -107,5 +108,8 @@ cargo build --release --target x86_64-unknown-linux-musl   # the static binary r
   1. `dev` is merged into `main`.
   2. `scripts/tag-release.sh` tags `main` as `vYY.MM.DD.HH.MM` (Riyadh time) and publishes the GitHub release.
   3. The release workflow attaches static musl binaries for x86_64 and aarch64.
+  4. The same script then runs `scripts/sign-release.sh`, which signs `SHA256SUMS` on the maintainer's machine.
+- **Unsigned releases are never installed** by `vps-watcher upgrade` or automatic updates.
+- **The signing key** lives only at `~/.config/vps-watcher/release-signing-key.pem` on the maintainer's machine. Never read, print, copy, upload or commit it, and never move signing into CI. `RELEASE_KEY` in `src/update.rs` is its public half; change it only together with a key rotation.
 - **Tags are never moved.**
 - **Never commit secrets:** `.env` files, real credentials, tokens, or `git-guide.md` (it is ignored on purpose).

@@ -75,6 +75,8 @@ pub async fn session(
         "email": v.token.as_deref().and_then(|t| ctx.auth.session(t)),
         "open_logs": cfg.open_logs,
         "version": crate::VERSION,
+        // Only the admin learns whether this server runs an outdated version.
+        "update": if v.admin { update_json(&ctx) } else { Value::Null },
     }))
 }
 
@@ -377,6 +379,27 @@ pub async fn alerts(State(ctx): State<AppState>, Extension(v): Extension<Viewer>
     }
     let channels = if v.admin { ctx.sh.notifier.describe() } else { Value::Null };
     Json(json!({ "active": active, "history": history, "rules": rules, "channels": channels }))
+}
+
+/// Update status plus the settings that shape it.
+fn update_json(ctx: &AppState) -> Value {
+    let st = ctx.sh.update.lock().map(|s| s.clone()).unwrap_or_default();
+    json!({
+        "status": st,
+        "check": ctx.sh.cfg.update_check,
+        "auto": ctx.sh.cfg.auto_update,
+        "releases": crate::update::RELEASES_PAGE,
+    })
+}
+
+/// Checks for a new release now (admin only); repeated clicks within a minute reuse the last answer.
+pub async fn check_update(State(ctx): State<AppState>, Extension(v): Extension<Viewer>) -> ApiResult<Json<Value>> {
+    require_admin(&v)?;
+    let recent = ctx.sh.update.lock().ok().and_then(|s| s.checked).is_some_and(|t| now().saturating_sub(t) < 60);
+    if !recent {
+        crate::update::check_now(&ctx.sh).await;
+    }
+    Ok(Json(update_json(&ctx)))
 }
 
 /// Sends a test alert to every channel (admin only).

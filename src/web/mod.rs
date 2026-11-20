@@ -67,6 +67,7 @@ pub fn serve(cfg: Config) -> Result<(), String> {
         tokio::spawn(collect::run_checks(sh.clone()));
         tokio::spawn(crate::alert::run(sh.notifier.clone(), alert_rx));
         tokio::spawn(collect::run_reports(sh.clone()));
+        tokio::spawn(crate::update::run(sh.clone()));
         let state: AppState = Arc::new(Ctx { sh: sh.clone(), auth });
         tokio::select! {
             _ = accept_loop(listener, router(state)) => {}
@@ -139,6 +140,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/monitors/{id}", delete(api::delete_monitor))
         .route("/api/alerts", get(api::alerts))
         .route("/api/alerts/test", post(api::test_alert))
+        .route("/api/update/check", post(api::check_update))
         .route("/api/report", get(api::report))
         .route("/api/report.csv", get(api::report_csv))
         .route("/api/report/email", post(api::email_report))

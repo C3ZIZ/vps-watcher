@@ -115,6 +115,8 @@ pub async fn tls_connect(host: &str, tcp: TcpStream) -> Result<TlsStream<TcpStre
 pub struct Response {
     pub status: u16,
     pub body: Vec<u8>,
+    /// The `Location` header, for following redirects.
+    pub location: Option<String>,
 }
 
 /// Sends one request and reads up to `max_body` bytes of the reply (0 skips the body).
@@ -172,8 +174,9 @@ where
     let req = req.body(Full::new(bytes)).map_err(|e| e.to_string())?;
     let res = tx.send_request(req).await.map_err(|e| e.to_string())?;
     let status = res.status().as_u16();
+    let location = res.headers().get(header::LOCATION).and_then(|v| v.to_str().ok()).map(String::from);
     if max_body == 0 {
-        return Ok(Response { status, body: Vec::new() });
+        return Ok(Response { status, body: Vec::new(), location });
     }
     // A reply larger than the limit is cut off rather than treated as a failure.
     let mut body = res.into_body();
@@ -184,7 +187,7 @@ where
             out.extend_from_slice(&data[..data.len().min(max_body - out.len())]);
         }
     }
-    Ok(Response { status, body: out })
+    Ok(Response { status, body: out, location })
 }
 
 /// Percent-encodes a value for `application/x-www-form-urlencoded`.

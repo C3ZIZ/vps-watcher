@@ -31,6 +31,12 @@ pub struct Config {
     pub trusted_proxies: Vec<IpAddr>,
     pub docker_socket: PathBuf,
     pub alerts: AlertConfig,
+    /// Check once a day whether a newer release exists.
+    pub update_check: bool,
+    /// Let the daily timer install signed releases by itself.
+    pub auto_update: bool,
+    /// Another release server (a mirror, or tests); signatures are still required.
+    pub update_url: Option<String>,
 }
 
 impl Config {
@@ -80,6 +86,15 @@ impl Config {
         }
 
         let alerts = AlertConfig::from_vals(&val)?;
+        let update_check = val("VPSW_UPDATE_CHECK").map_or(Ok(true), |v| parse_bool("VPSW_UPDATE_CHECK", Some(v)))?;
+        let auto_update = parse_bool("VPSW_AUTO_UPDATE", val("VPSW_AUTO_UPDATE"))?;
+        let update_url = val("VPSW_UPDATE_URL").map(|u| u.trim_end_matches('/').to_string());
+        if let Some(u) = &update_url {
+            let p = crate::net::parse_url(u).map_err(|_| format!("VPSW_UPDATE_URL '{u}' is not a valid URL"))?;
+            if !p.https && !p.is_loopback() {
+                return Err("VPSW_UPDATE_URL must use https".into());
+            }
+        }
 
         Ok(Config {
             listen,
@@ -91,6 +106,9 @@ impl Config {
             trusted_proxies,
             docker_socket: val("VPSW_DOCKER_SOCKET").unwrap_or_else(|| "/var/run/docker.sock".into()).into(),
             alerts,
+            update_check,
+            auto_update,
+            update_url,
         })
     }
 
@@ -105,6 +123,15 @@ impl Config {
             ("Data dir", self.data_dir.display().to_string()),
             ("Docker socket", self.docker_socket.display().to_string()),
             ("Alert rules", crate::alert::rules_summary(&self.alerts)),
+            (
+                "Updates",
+                format!(
+                    "check {}, automatic install {}{}",
+                    if self.update_check { "daily" } else { "off" },
+                    if self.auto_update { "on (signed releases only)" } else { "off" },
+                    self.update_url.as_ref().map_or(String::new(), |u| format!(", from {u}"))
+                ),
+            ),
         ];
         v.extend(crate::alert::channels_summary(&self.alerts));
         v
@@ -282,6 +309,16 @@ mod tests {
         assert_eq!(c.auth, AuthMode::Login);
         assert!(!c.open_logs);
         assert_eq!(c.interval, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn update_settings() {
+        let c = cfg(&[]).unwrap();
+        assert!(c.update_check && !c.auto_update && c.update_url.is_none());
+        let c = cfg(&[("VPSW_UPDATE_CHECK", "off"), ("VPSW_AUTO_UPDATE", "yes")]).unwrap();
+        assert!(!c.update_check && c.auto_update);
+        assert!(cfg(&[("VPSW_UPDATE_URL", "http://mirror.example.com")]).is_err());
+        assert!(cfg(&[("VPSW_UPDATE_URL", "http://127.0.0.1:8098/")]).unwrap().update_url.unwrap().ends_with("8098"));
     }
 
     #[test]

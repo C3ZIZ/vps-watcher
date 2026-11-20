@@ -1,6 +1,6 @@
 #!/bin/sh
 # Tags main's newest commit vYY.MM.DD.HH.MM (Riyadh time) and publishes the GitHub Release.
-# The release workflow then builds and attaches the binaries.
+# The release workflow then builds and attaches the binaries, and this script signs them locally.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -21,4 +21,16 @@ NOTES="$(git log -1 --format=%B)"
 git tag -a "$TAG" -m "$TAG"
 git push origin "$TAG"
 gh release create "$TAG" --title "$TAG" --notes "$NOTES" --latest
-echo "Released $TAG"
+echo "Released $TAG; waiting for the build to attach binaries"
+
+# Wait for the release workflow of this tag, then sign it with the offline key.
+RUN=""
+for _ in $(seq 1 30); do
+  RUN="$(gh run list --workflow release.yml --limit 10 --json databaseId,headBranch \
+    -q ".[] | select(.headBranch == \"$TAG\") | .databaseId" | head -n1)"
+  [ -n "$RUN" ] && break
+  sleep 5
+done
+[ -n "$RUN" ] || die "the release workflow did not start; sign later with: scripts/sign-release.sh $TAG"
+gh run watch "$RUN" --exit-status --interval 15 >/dev/null || die "the release build failed; see: gh run view $RUN"
+scripts/sign-release.sh "$TAG"

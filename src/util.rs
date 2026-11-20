@@ -81,6 +81,31 @@ pub fn base64(data: &[u8]) -> String {
     out
 }
 
+/// Decodes standard base64 (padding optional, whitespace ignored); None on any other character.
+pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    let val = |c: u8| match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    };
+    let clean: Vec<u8> = text.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    let clean = clean.strip_suffix(b"==").or_else(|| clean.strip_suffix(b"=")).unwrap_or(&clean);
+    let mut out = Vec::with_capacity(clean.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for &c in clean {
+        acc = acc << 6 | val(c)? as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
 /// Calendar date and time in UTC: (year, month, day, hour, minute, second, weekday 0=Sunday).
 fn civil(ts: u64) -> (i64, u32, u32, u32, u32, u32, u32) {
     let days = (ts / 86_400) as i64;
@@ -125,6 +150,11 @@ mod tests {
             assert_eq!(base64(i.as_bytes()), o);
         }
         assert_eq!(base64(&[0xff, 0xfe]), "//4=");
+        for (i, o) in cases {
+            assert_eq!(base64_decode(o).unwrap(), i.as_bytes());
+        }
+        assert_eq!(base64_decode("Zm9v\nYmFy").unwrap(), b"foobar");
+        assert!(base64_decode("Zm9v!").is_none());
     }
 
     #[test]

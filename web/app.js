@@ -752,6 +752,13 @@ function pageOverview(view) {
   pageTitle(view, 'Overview');
   const banner = h('div', { class: 'banner', hidden: true });
   const strip = h('a', { class: 'alert-strip', href: '#/alerts', hidden: true });
+  const up = state.session.update && state.session.update.status;
+  const updateNote = up && up.available
+    ? h('a', { class: 'update-strip', href: '#/settings' }, icon('download'),
+      h('b', { text: `vps-watcher ${up.latest} is available` }),
+      h('span', { class: 'grow', text: state.session.update.auto ? 'It installs automatically within a day.' : `You run ${up.current}. Upgrade with: sudo vps-watcher upgrade` }),
+      h('span', { text: 'Details →' }))
+    : null;
   const kpis = h('div', { class: 'grid kpis' });
   const cpu = chartCard('CPU', { unit: '%', max: 100, series: [{ label: 'CPU', color: '--s1' }] });
   const mem = chartCard('Memory', { unit: '%', max: 100, series: [{ label: 'Memory', color: '--s1' }] });
@@ -759,7 +766,7 @@ function pageOverview(view) {
   const io = chartCard('Disk I/O', { unit: 'B/s', series: [{ label: 'Read', color: '--s1' }, { label: 'Write', color: '--s2' }] });
   const appsCard = h('section', { class: 'card' });
   const sideCard = h('div', { class: 'stack' });
-  view.append(banner, strip, kpis,
+  view.append(banner, strip, updateNote || '', kpis,
     h('div', { class: 'toolbar' }, h('h2', { text: 'History' }), rangeEl),
     h('div', { class: 'grid charts' }, cpu.card, mem.card, net.card, io.card),
     h('div', { class: 'grid two' }, appsCard, sideCard));
@@ -1457,6 +1464,43 @@ function renderReport(r) {
 
 /* ---------- Settings ---------- */
 
+/** Current and latest version, when it was checked, and how upgrades happen. */
+function updatesCard() {
+  const card = h('section', { class: 'card' });
+  const paint = (u) => {
+    const st = u.status || {};
+    const badge = !u.check ? h('span', { class: 'badge', text: 'checks off' })
+      : st.available ? h('span', { class: 'badge warn', text: `${st.latest} available` })
+        : st.error ? h('span', { class: 'badge bad', text: 'check failed' })
+          : st.latest ? h('span', { class: 'badge good', text: 'up to date' })
+            : h('span', { class: 'badge', text: 'not checked yet' });
+    const btn = h('button', { type: 'button' }, icon('refresh'), 'Check now');
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try { const r = await api.post('/api/update/check'); state.session.update = r; paint(r); }
+      catch (e) { toast(e.message); btn.disabled = false; }
+    });
+    const rows = [
+      ['Running', st.current || state.session.version],
+      ['Latest release', st.latest || '–'],
+      ['Last checked', st.checked ? fmt.ago(st.checked) : '–'],
+      ['Automatic install', u.auto ? 'on, signed releases only, once a day' : 'off'],
+    ];
+    fill(card,
+      h('div', { class: 'card-head' }, h('h2', { text: 'Updates' }), badge),
+      h('dl', { class: 'kv' }, rows.flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })])),
+      st.error ? h('p', { class: 'error small', text: st.error }) : null,
+      h('p', { class: 'muted small', text: st.available
+        ? (u.auto ? 'The daily timer installs it and restarts vps-watcher. To install now:' : 'To install it, run on the server:')
+        : 'Upgrades are installed from the server, only when signed by the maintainer:' }),
+      h('pre', { class: 'cmd', text: 'sudo vps-watcher upgrade' }),
+      h('div', { class: 'row' }, u.check ? btn : null,
+        st.latest ? h('a', { href: `${u.releases}/tag/${st.latest}`, target: '_blank', rel: 'noopener noreferrer', text: 'Release notes' }) : null));
+  };
+  paint(state.session.update || { status: {}, check: false });
+  return card;
+}
+
 function pageSettings(view) {
   pageTitle(view, 'Settings');
   const s = state.session;
@@ -1505,6 +1549,7 @@ function pageSettings(view) {
       h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { text: 'Sessions' })),
         h('p', { class: 'muted small', text: 'Signed in somewhere you no longer use? End every other session.' }),
         h('button', { type: 'button', onclick: async () => { try { await api.post('/api/logout-others'); toast('Other sessions signed out.'); } catch (e) { toast(e.message); } } }, 'Sign out other browsers')),
+      updatesCard(),
       h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { text: 'About' })), about,
         h('p', { class: 'small' }, h('a', { href: 'https://github.com/C3ZIZ/vps-watcher', target: '_blank', rel: 'noopener noreferrer', text: 'Documentation on GitHub' }))))));
 }

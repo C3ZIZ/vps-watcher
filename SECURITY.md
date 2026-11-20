@@ -21,3 +21,7 @@ Only the latest release receives fixes. Upgrade by running the install command a
 - Log files are opened without following symbolic links and only if they are regular files, so a swapped file cannot leak other files or hang the service.
 - The service is read-only towards your apps: it sends only `GET` requests to Docker and never starts, stops or changes anything.
 - Membership in the `docker` group is effectively root on most hosts. The installer adds the service user to it so containers can be listed. If you do not want that, remove the user from the group; containers then disappear from the dashboard and everything else keeps working.
+
+## Release signing
+
+Each release's file list (`SHA256SUMS`) is signed with an Ed25519 key that is kept offline by the maintainer and never stored on GitHub. `vps-watcher upgrade` and automatic updates verify that signature and every file hash, refuse older versions, and roll back if the new version does not start. The one-line installer relies on HTTPS and checksums only; after the first install, use `sudo vps-watcher upgrade`.

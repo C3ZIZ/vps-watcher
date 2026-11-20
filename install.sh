@@ -13,6 +13,8 @@ set -eu
 REPO="C3ZIZ/vps-watcher"
 BIN=/usr/local/bin/vps-watcher
 UNIT=/etc/systemd/system/vps-watcher.service
+UPDATE_UNIT=/etc/systemd/system/vps-watcher-update.service
+UPDATE_TIMER=/etc/systemd/system/vps-watcher-update.timer
 CONF_DIR=/etc/vps-watcher
 CONF="$CONF_DIR/vps-watcher.env"
 DATA=/var/lib/vps-watcher
@@ -42,8 +44,8 @@ command -v systemctl >/dev/null 2>&1 || die "systemd is required"
 
 uninstall() {
   say "Stopping and removing the service"
-  systemctl disable --now vps-watcher >/dev/null 2>&1 || true
-  rm -f "$UNIT" "$BIN"
+  systemctl disable --now vps-watcher vps-watcher-update.timer >/dev/null 2>&1 || true
+  rm -f "$UNIT" "$UPDATE_UNIT" "$UPDATE_TIMER" "$BIN"
   systemctl daemon-reload
   if [ "$1" = purge ]; then
     say "Deleting data and settings"
@@ -80,6 +82,7 @@ if [ -n "$LOCAL" ]; then
   say "Installing from $LOCAL"
   cp "$LOCAL/$ASSET" "$TMP/vps-watcher" 2>/dev/null || cp "$LOCAL/vps-watcher" "$TMP/vps-watcher"
   cp "$LOCAL/vps-watcher.service" "$LOCAL/vps-watcher.env" "$TMP/"
+  cp "$LOCAL/vps-watcher-update.service" "$LOCAL/vps-watcher-update.timer" "$TMP/" 2>/dev/null || true
 else
   if [ "$VERSION" = latest ]; then BASE="https://github.com/$REPO/releases/latest/download"
   else BASE="https://github.com/$REPO/releases/download/$VERSION"; fi
@@ -89,6 +92,10 @@ else
   done
   say "Verifying checksum"
   (cd "$TMP" && sha256sum -c "$ASSET.sha256" >/dev/null) || die "checksum mismatch; aborting"
+  # The update timer ships from v26.11.21 onwards; older releases simply lack it.
+  for f in vps-watcher-update.service vps-watcher-update.timer; do
+    fetch "$BASE/$f" "$TMP/$f" 2>/dev/null || rm -f "$TMP/$f"
+  done
   mv "$TMP/$ASSET" "$TMP/vps-watcher"
 fi
 
@@ -109,6 +116,12 @@ UPGRADE=no
 [ -f "$BIN" ] && UPGRADE=yes
 install -m 0755 "$TMP/vps-watcher" "$BIN"
 install -m 0644 "$TMP/vps-watcher.service" "$UNIT"
+TIMER=no
+if [ -f "$TMP/vps-watcher-update.timer" ] && [ -f "$TMP/vps-watcher-update.service" ]; then
+  install -m 0644 "$TMP/vps-watcher-update.service" "$UPDATE_UNIT"
+  install -m 0644 "$TMP/vps-watcher-update.timer" "$UPDATE_TIMER"
+  TIMER=yes
+fi
 install -d -m 0750 -o root -g "$USER_NAME" "$CONF_DIR"
 if [ ! -f "$CONF" ]; then
   install -m 0640 -o root -g "$USER_NAME" "$TMP/vps-watcher.env" "$CONF"
@@ -127,6 +140,9 @@ else
   systemctl enable --now vps-watcher >/dev/null
   say "Installed $("$BIN" version)"
 fi
+
+# The timer runs daily but installs nothing unless VPSW_AUTO_UPDATE=true.
+if [ "$TIMER" = yes ]; then systemctl enable --now vps-watcher-update.timer >/dev/null 2>&1 || true; fi
 
 sleep 1
 systemctl is-active --quiet vps-watcher || die "the service did not start; see: journalctl -u vps-watcher -n 50"
@@ -148,6 +164,9 @@ cat <<EOF
   Alerts by email or webhook: fill in the alert settings in $CONF
      (new settings from upgrades are listed in $CONF_DIR/vps-watcher.env.example), then
      sudo vps-watcher config && sudo systemctl restart vps-watcher && sudo vps-watcher test-alert
+
+  Updates: the dashboard tells you when a new version is out. Upgrade with
+     sudo vps-watcher upgrade        (or set VPSW_AUTO_UPDATE=true to install signed releases daily)
 
   Logs: journalctl -u vps-watcher -f      Settings: $CONF
 EOF

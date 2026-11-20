@@ -1,0 +1,17 @@
+[Unit]
+Description=vps-watcher automatic update (acts only when VPSW_AUTO_UPDATE=true)
+Documentation=https://github.com/C3ZIZ/vps-watcher#updates
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Installs only releases signed with the maintainer's key, and rolls back if the new version fails to start.
+ExecStart=/usr/local/bin/vps-watcher upgrade --auto
+# Root is needed to replace the binary and restart the service; keep everything else closed.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

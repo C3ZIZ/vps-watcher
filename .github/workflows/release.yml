@@ -1,6 +1,8 @@
 name: Release
 
 # scripts/tag-release.sh publishes the GitHub Release; this attaches the binaries to it.
+# Signing happens afterwards on the maintainer's machine (scripts/sign-release.sh): the key never
+# touches GitHub, so a compromised account or workflow cannot sign a release.
 on:
   release:
     types: [published]
@@ -55,4 +57,7 @@ jobs:
           ref: ${{ github.event.release.tag_name }}
           persist-credentials: false
       - name: Upload service, settings and installer
-        run: gh release upload "$TAG" packaging/vps-watcher.service packaging/vps-watcher.env install.sh --clobber --repo "$GITHUB_REPOSITORY"
+        run: |
+          gh release upload "$TAG" packaging/vps-watcher.service packaging/vps-watcher.env \
+            packaging/vps-watcher-update.service packaging/vps-watcher-update.timer install.sh \
+            --clobber --repo "$GITHUB_REPOSITORY"

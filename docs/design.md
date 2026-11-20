@@ -60,6 +60,23 @@ vps-watcher is a free, open-source monitor for one VPS. You install one binary o
 - **Env file.** Parsed with systemd's `EnvironmentFile=` rules (quotes, escapes, continuations), so the CLI tests exactly what the service runs with.
 - **Secrets.** Settings hold secrets in a `Secret` type whose `Debug` output is a placeholder. `vps-watcher config`, the Alerts page and all error messages show only that a secret is set.
 
+## Updates
+
+- **Check** (`src/update.rs`). Two minutes after start, then every 24 hours plus up to an hour of jitter, the service asks GitHub's API for the latest release tag. Tags are fixed-width (`vYY.MM.DD.HH.MM`), so text order is time order. Development builds never count as outdated. Each new release is announced once: a dashboard banner for the admin, plus a notice through the alert channels. `update.json` stores which tag was announced.
+- **Signing.** A release is published by `scripts/tag-release.sh`, and CI attaches the binaries. Then `scripts/sign-release.sh` runs on the maintainer's machine:
+  1. It downloads every file.
+  2. It writes `SHA256SUMS`, whose first line is `vps-watcher <tag>` followed by one hash per file.
+  3. It signs that file with an Ed25519 key that never touches GitHub, and uploads `SHA256SUMS.sig`.
+  4. The public key is compiled into the binary.
+- **Upgrade** (`vps-watcher upgrade`, root):
+  1. Fetch the latest tag and refuse anything not newer.
+  2. Verify the signature and that the signed tag matches.
+  3. Download the binary and unit files and check each SHA-256.
+  4. Trial-run `<new> version`.
+  5. Swap files atomically, reload systemd and restart.
+  6. Wait for the service to stay active. If it doesn't, restore the previous binary and units.
+- **Automatic updates.** `vps-watcher-update.timer` (daily, randomized up to 6 h, persistent) runs `upgrade --auto` as root under a lightly hardened oneshot unit. The command exits at once unless `VPSW_AUTO_UPDATE=true`. Network failures are not errors, so the unit only fails, and alerts, on a real problem. Results go to the alert channels. The monitoring service itself never gains the right to replace its own binary.
+
 ## Security
 
 - **Access modes** (`VPSW_AUTH`):
@@ -124,3 +141,4 @@ All JSON is under `/api`, plus one SSE stream.
 | POST | `/api/report/email` | Email the report for `{"range": …}` to the alert recipients (admin) |
 | GET | `/api/alerts` | Firing alerts, history and rules; channel details for the admin |
 | POST | `/api/alerts/test` | Send a test alert to every channel (admin) |
+| POST | `/api/update/check` | Check for a new release now (admin); `/api/session` carries the update status for the admin |
