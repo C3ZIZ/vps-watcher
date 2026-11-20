@@ -20,8 +20,9 @@ git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && die "tag $TAG already e
 NOTES="$(git log -1 --format=%B)"
 git tag -a "$TAG" -m "$TAG"
 git push origin "$TAG"
-gh release create "$TAG" --title "$TAG" --notes "$NOTES" --latest
-echo "Released $TAG; waiting for the build to attach binaries"
+# Not "latest" yet: servers see the release only after sign-release.sh has signed it.
+gh release create "$TAG" --title "$TAG" --notes "$NOTES" --latest=false
+echo "Published $TAG; waiting for the build to attach binaries"
 
 # Wait for the release workflow of this tag, then sign it with the offline key.
 RUN=""

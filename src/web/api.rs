@@ -74,8 +74,8 @@ pub async fn session(
         "authenticated": v.admin,
         "email": v.token.as_deref().and_then(|t| ctx.auth.session(t)),
         "open_logs": cfg.open_logs,
-        "version": crate::VERSION,
-        // Only the admin learns whether this server runs an outdated version.
+        // Only the admin learns the version and whether it is outdated; visitors could target old versions.
+        "version": if v.admin { Value::from(crate::VERSION) } else { Value::Null },
         "update": if v.admin { update_json(&ctx) } else { Value::Null },
     }))
 }
@@ -376,6 +376,7 @@ pub async fn alerts(State(ctx): State<AppState>, Extension(v): Extension<Viewer>
         let snap = ctx.sh.snapshot();
         active.iter_mut().filter(|a| !snap.alert_detail_is_public(&a.key)).for_each(|a| a.detail.clear());
         history.iter_mut().filter(|e| !snap.alert_detail_is_public(&e.key)).for_each(|e| e.detail.clear());
+        history.retain(|e| e.key != "update");
     }
     let channels = if v.admin { ctx.sh.notifier.describe() } else { Value::Null };
     Json(json!({ "active": active, "history": history, "rules": rules, "channels": channels }))

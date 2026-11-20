@@ -8,6 +8,7 @@ Wants=network-online.target
 Type=oneshot
 # Installs only releases signed with the maintainer's key, and rolls back if the new version fails to start.
 ExecStart=/usr/local/bin/vps-watcher upgrade --auto
+TimeoutStartSec=15min
 # Root is needed to replace the binary and restart the service; keep everything else closed.
 NoNewPrivileges=yes
 PrivateTmp=yes

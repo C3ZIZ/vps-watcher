@@ -117,6 +117,8 @@ UPGRADE=no
 install -m 0755 "$TMP/vps-watcher" "$BIN"
 install -m 0644 "$TMP/vps-watcher.service" "$UNIT"
 TIMER=no
+# Enable the timer only when it is new, so an admin who disabled it keeps it disabled.
+[ -f "$UPDATE_TIMER" ] && TIMER_EXISTED=yes || TIMER_EXISTED=no
 if [ -f "$TMP/vps-watcher-update.timer" ] && [ -f "$TMP/vps-watcher-update.service" ]; then
   install -m 0644 "$TMP/vps-watcher-update.service" "$UPDATE_UNIT"
   install -m 0644 "$TMP/vps-watcher-update.timer" "$UPDATE_TIMER"
@@ -142,7 +144,9 @@ else
 fi
 
 # The timer runs daily but installs nothing unless VPSW_AUTO_UPDATE=true.
-if [ "$TIMER" = yes ]; then systemctl enable --now vps-watcher-update.timer >/dev/null 2>&1 || true; fi
+if [ "$TIMER" = yes ] && [ "$TIMER_EXISTED" = no ]; then
+  systemctl enable --now vps-watcher-update.timer >/dev/null 2>&1 || true
+fi
 
 sleep 1
 systemctl is-active --quiet vps-watcher || die "the service did not start; see: journalctl -u vps-watcher -n 50"

@@ -24,4 +24,15 @@ Only the latest release receives fixes. Upgrade by running the install command a
 
 ## Release signing
 
-Each release's file list (`SHA256SUMS`) is signed with an Ed25519 key that is kept offline by the maintainer and never stored on GitHub. `vps-watcher upgrade` and automatic updates verify that signature and every file hash, refuse older versions, and roll back if the new version does not start. The one-line installer relies on HTTPS and checksums only; after the first install, use `sudo vps-watcher upgrade`.
+Each release's file list (`SHA256SUMS`) is signed with an Ed25519 key that the maintainer keeps offline and never stores on GitHub. Before signing, the maintainer verifies two things:
+
+- each binary's GitHub build attestation, which shows it came from this repository's release workflow and the tagged commit
+- every other file against the tagged source
+
+`vps-watcher upgrade` and automatic updates verify the signature and every file hash, refuse older versions, and roll back if the new version does not stay up.
+
+Limits:
+
+- **The installer.** The one-line installer relies on HTTPS and checksums only. After the first install, use `sudo vps-watcher upgrade`.
+- **The build.** The signature confirms the maintainer approved the files. It cannot catch a malicious change in the tagged source or its dependencies, or a compromised build workflow.
+- **Held-back updates.** Someone who controls GitHub or a mirror can stop a server from seeing new releases, which delays updates. They still cannot install anything unsigned.

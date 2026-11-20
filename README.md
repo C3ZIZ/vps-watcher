@@ -232,11 +232,15 @@ sudo vps-watcher upgrade           # or: sudo vps-watcher upgrade --check
 
 Each upgrade, manual or automatic, is protected in three ways:
 
-- **Signed releases only.** Every release carries a list of its files and their SHA-256 hashes, signed with the maintainer's Ed25519 key. That key is kept offline, never on GitHub. vps-watcher refuses a release whose signature, file hashes or version name do not match, so a hacked GitHub account or build server cannot push code to your server.
-- **No downgrades.** It only ever moves to a newer version.
-- **Rollback.** If the new version does not start, the previous binary and service files are put back and the service restarts.
+- **Signed releases only.** Every release carries a list of its files and their SHA-256 hashes, signed with the maintainer's Ed25519 key. That key stays on the maintainer's machine, never on GitHub. Before signing, the maintainer checks two things:
+  - each binary was built by this repository's release workflow from the tagged commit (GitHub build attestation)
+  - every other file matches the tagged source
 
-Turn the daily check off with `VPSW_UPDATE_CHECK=false`. The check sends nothing about your server: it is one request to GitHub for the latest release name.
+  vps-watcher refuses a release whose signature, file hashes or version name do not match. So a file swapped on GitHub after signing, or a release published with a stolen GitHub account, is never installed.
+- **No downgrades.** It only ever moves to a newer version.
+- **Rollback.** Every file is downloaded, verified and test-run before anything changes. If the new version fails to start, or restarts within its first 20 seconds, the previous binary, service files and permissions are put back and the service restarts.
+
+Turn the daily check off with `VPSW_UPDATE_CHECK=false`. The check is one request to GitHub for the latest release name. GitHub sees the server's IP address and vps-watcher version, nothing else. Only the admin sees the running version and update status; public viewers in open mode do not.
 
 ## Upgrade, reset or remove
 
