@@ -37,6 +37,8 @@ struct Session {
 pub enum LoginError {
     /// Too many failures from this IP; retry after this many seconds.
     Limited(u64),
+    /// Too many password checks running at once; retry shortly.
+    Busy,
     Invalid,
 }
 
@@ -46,7 +48,12 @@ pub struct Auth {
     admin: Mutex<Option<Admin>>,
     sessions: Mutex<HashMap<String, Session>>,
     fails: Mutex<HashMap<IpAddr, (u32, Instant)>>,
+    /// At most two argon2 checks run at once, so login floods cannot pile up memory.
+    slots: tokio::sync::Semaphore,
 }
+
+/// Longest password we will hash; longer input is rejected before any work.
+const MAX_PASSWORD_BYTES: usize = 1024;
 
 /// Locks a mutex, recovering from poisoning.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -62,7 +69,13 @@ impl Auth {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
         };
-        Ok(Auth { path, admin: Mutex::new(admin), sessions: Mutex::default(), fails: Mutex::default() })
+        Ok(Auth {
+            path,
+            admin: Mutex::new(admin),
+            sessions: Mutex::default(),
+            fails: Mutex::default(),
+            slots: tokio::sync::Semaphore::new(2),
+        })
     }
 
     /// True until the first admin is created.
@@ -91,8 +104,15 @@ impl Auth {
 
     /// Verifies credentials and returns a new session token.
     pub async fn login(&self, ip: IpAddr, email: &str, password: &str) -> Result<String, LoginError> {
+        let ip = limit_key(ip);
         if let Some(wait) = self.limited(ip) {
             return Err(LoginError::Limited(wait));
+        }
+        let Ok(_slot) = self.slots.try_acquire() else { return Err(LoginError::Busy) };
+        // Count the attempt before the slow hash, so parallel requests cannot skip the limit.
+        self.note_failure(ip);
+        if password.len() > MAX_PASSWORD_BYTES {
+            return Err(LoginError::Invalid);
         }
         let stored = lock(&self.admin).clone();
         let email = email.trim().to_lowercase();
@@ -103,7 +123,6 @@ impl Auth {
         };
         let pw_ok = verify_password(password.to_string(), hash).await;
         if !(pw_ok && email_ok) {
-            self.note_failure(ip);
             return Err(LoginError::Invalid);
         }
         lock(&self.fails).remove(&ip);
@@ -136,6 +155,9 @@ impl Auth {
         new_pw: Option<&str>,
     ) -> Result<(), String> {
         let stored = lock(&self.admin).clone().ok_or("No admin exists.")?;
+        if current.len() > MAX_PASSWORD_BYTES {
+            return Err("Current password is wrong.".into());
+        }
         if !verify_password(current.to_string(), stored.hash.clone()).await {
             return Err("Current password is wrong.".into());
         }
@@ -286,9 +308,34 @@ fn dummy_hash() -> &'static str {
 /// Headers that mean a request came through a proxy.
 const PROXY_HEADERS: [&str; 4] = ["x-forwarded-for", "forwarded", "x-real-ip", "x-forwarded-proto"];
 
-/// True only for requests made straight to the loopback port (no proxy in between).
+/// True only for requests made straight to the loopback port (no proxy in between),
+/// addressed to a loopback name so DNS rebinding through an SSH tunnel cannot pass.
 pub fn is_direct_loopback(peer: SocketAddr, headers: &HeaderMap) -> bool {
-    peer.ip().to_canonical().is_loopback() && !PROXY_HEADERS.iter().any(|h| headers.contains_key(*h))
+    let host = headers.get(axum::http::header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
+    peer.ip().to_canonical().is_loopback()
+        && !PROXY_HEADERS.iter().any(|h| headers.contains_key(*h))
+        && is_loopback_host(host)
+}
+
+/// `localhost`, `127.x.x.x` or `[::1]`, with or without a port.
+fn is_loopback_host(host: &str) -> bool {
+    let name = match host.strip_prefix('[') {
+        Some(rest) => rest.split(']').next().unwrap_or(""),
+        None => host.rsplit_once(':').map_or(host, |(h, _)| h),
+    };
+    name.eq_ignore_ascii_case("localhost") || name.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Rate-limit key: the address itself, or its /64 network for IPv6 (one host usually owns a whole /64).
+fn limit_key(ip: IpAddr) -> IpAddr {
+    match ip.to_canonical() {
+        IpAddr::V6(v6) => {
+            let mut seg = v6.segments();
+            seg[4..].fill(0);
+            IpAddr::V6(seg.into())
+        }
+        v4 => v4,
+    }
 }
 
 /// Real client IP: the right-most untrusted X-Forwarded-For entry when the peer is a trusted proxy.
@@ -374,11 +421,46 @@ mod tests {
         let mapped: SocketAddr = "[::ffff:127.0.0.1]:5000".parse().unwrap();
         let remote: SocketAddr = "8.8.8.8:5000".parse().unwrap();
         let mut h = HeaderMap::new();
+        h.insert("host", "127.0.0.1:9100".parse().unwrap());
         assert!(is_direct_loopback(local, &h));
         assert!(is_direct_loopback(mapped, &h));
         assert!(!is_direct_loopback(remote, &h));
+        for ok in ["localhost:9100", "[::1]:9100", "LOCALHOST"] {
+            h.insert("host", ok.parse().unwrap());
+            assert!(is_direct_loopback(local, &h), "{ok}");
+        }
+        h.insert("host", "evil.com:9100".parse().unwrap());
+        assert!(!is_direct_loopback(local, &h), "DNS rebinding through a tunnel");
+        h.insert("host", "localhost:9100".parse().unwrap());
         h.insert("x-forwarded-for", "8.8.8.8".parse().unwrap());
         assert!(!is_direct_loopback(local, &h), "came through a proxy");
+    }
+
+    #[tokio::test]
+    async fn parallel_attempts_cannot_skip_the_limit() {
+        let d = tempfile::tempdir().unwrap();
+        let a = std::sync::Arc::new(Auth::load(d.path()).unwrap());
+        a.create_admin("me@x.io", "correct horse battery").await.unwrap();
+        let bad = ip("5.6.7.9");
+        let mut set = tokio::task::JoinSet::new();
+        for _ in 0..40 {
+            let a = a.clone();
+            set.spawn(async move { a.login(bad, "me@x.io", "nope nope nope").await });
+        }
+        let mut checked = 0;
+        while let Some(r) = set.join_next().await {
+            if r.unwrap() == Err(LoginError::Invalid) {
+                checked += 1;
+            }
+        }
+        assert!(checked <= MAX_FAILS as usize, "{checked} passwords were checked");
+    }
+
+    #[test]
+    fn ipv6_limited_per_64() {
+        assert_eq!(limit_key(ip("2001:db8:1:2:aaaa::1")), limit_key(ip("2001:db8:1:2:bbbb::9")));
+        assert_ne!(limit_key(ip("2001:db8:1:2::1")), limit_key(ip("2001:db8:1:3::1")));
+        assert_eq!(limit_key(ip("1.2.3.4")), ip("1.2.3.4"));
     }
 
     #[test]

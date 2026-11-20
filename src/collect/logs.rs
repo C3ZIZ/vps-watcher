@@ -58,7 +58,7 @@ pub fn parse_rfc3339(s: &str) -> Option<u64> {
 
 /// Returns up to `lines` lines from the end of `path`, reading at most [`MAX_BYTES`].
 pub fn tail_file(path: &Path, lines: usize) -> Result<Vec<LogLine>, String> {
-    let mut f = std::fs::File::open(path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+    let mut f = crate::util::open_regular(path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
     let len = f.metadata().map_err(|e| e.to_string())?.len();
     let start = len.saturating_sub(MAX_BYTES);
     f.seek(SeekFrom::Start(start)).map_err(|e| e.to_string())?;

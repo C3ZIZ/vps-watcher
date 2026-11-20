@@ -142,7 +142,7 @@ pub fn build(h: &History, snap: &Snapshot, range: Range, label: &'static str, no
         .disks
         .iter()
         .map(|d| {
-            let used_pct = d.used as f64 * 100.0 / d.total.max(1) as f64;
+            let used_pct = d.pct as f64;
             let slope = h.query(&format!("disk:{}.used", d.mount), fr, now).and_then(|p| slope_per_day(&p));
             DiskRow {
                 mount: d.mount.clone(),

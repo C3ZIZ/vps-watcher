@@ -11,8 +11,8 @@ use super::{History, Ring, Series, TIERS};
 const MAGIC: &[u8; 4] = b"VPSW";
 const VERSION: u8 = 1;
 
-/// Writes history to `path` atomically (temp file + rename).
-pub fn save(h: &History, path: &Path) -> std::io::Result<()> {
+/// Serializes history; call while holding the lock, then [`write`] without it.
+pub fn encode(h: &History) -> Vec<u8> {
     let mut buf = Vec::with_capacity(h.series.len() * 2 * 2880 * 4 + 64);
     buf.extend_from_slice(MAGIC);
     buf.push(VERSION);
@@ -31,10 +31,15 @@ pub fn save(h: &History, path: &Path) -> std::io::Result<()> {
             }
         }
     }
+    buf
+}
+
+/// Writes encoded history to `path` atomically (temp file + rename).
+pub fn write(buf: &[u8], path: &Path) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
     {
         let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(&buf)?;
+        f.write_all(buf)?;
         f.sync_all()?;
     }
     std::fs::rename(&tmp, path)
@@ -116,7 +121,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("history.bin");
-        save(&h, &p).unwrap();
+        write(&encode(&h), &p).unwrap();
         let back = load(&p).unwrap();
         let now = 1_700_000_000 + 199 * 30;
         let a = h.query("host.cpu", Range::D7, now).unwrap();

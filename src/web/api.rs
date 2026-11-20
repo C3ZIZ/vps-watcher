@@ -121,6 +121,10 @@ pub async fn login(
             StatusCode::TOO_MANY_REQUESTS,
             format!("Too many failed attempts. Try again in {} minutes.", s.div_ceil(60)),
         )),
+        Err(LoginError::Busy) => Err(ApiError(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many sign-in attempts right now. Try again shortly.".into(),
+        )),
         Err(LoginError::Invalid) => Err(ApiError(StatusCode::UNAUTHORIZED, "Wrong email or password.".into())),
     }
 }
@@ -160,19 +164,33 @@ pub async fn logout_others(State(ctx): State<AppState>, Extension(v): Extension<
 }
 
 /// The latest snapshot.
-pub async fn overview(State(ctx): State<AppState>) -> Response {
-    Json(&*ctx.sh.snapshot()).into_response()
+pub async fn overview(State(ctx): State<AppState>, Extension(v): Extension<Viewer>) -> Response {
+    let snap = ctx.sh.snapshot();
+    if v.admin { Json(&*snap).into_response() } else { Json(snap.public()).into_response() }
 }
 
+/// Most live streams at once; each costs one connection and a copy of the JSON per sample.
+const MAX_LIVE: usize = 32;
+
 /// Server-Sent Events: one snapshot per sample while the page is open.
-pub async fn live(State(ctx): State<AppState>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+pub async fn live(
+    State(ctx): State<AppState>,
+    Extension(v): Extension<Viewer>,
+) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
+    if ctx.sh.tick.receiver_count() >= MAX_LIVE {
+        return Err(ApiError(StatusCode::SERVICE_UNAVAILABLE, "Too many live viewers right now.".into()));
+    }
     let rx = ctx.sh.tick.subscribe();
-    let stream = futures_util::stream::unfold((ctx, rx), |(ctx, mut rx)| async move {
+    let stream = futures_util::stream::unfold((ctx, rx, v), |(ctx, mut rx, v)| async move {
         rx.changed().await.ok()?;
-        let data = serde_json::to_string(&*ctx.sh.snapshot()).unwrap_or_default();
-        Some((Ok(Event::default().data(data)), (ctx, rx)))
+        // End the stream as soon as the admin session is signed out elsewhere.
+        if v.admin && v.token.as_deref().and_then(|t| ctx.auth.session(t)).is_none() {
+            return None;
+        }
+        let data = ctx.sh.live_json(v.admin);
+        Some((Ok(Event::default().data(&*data)), (ctx, rx, v)))
     });
-    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(20)))
+    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(20))))
 }
 
 #[derive(Deserialize)]
@@ -300,9 +318,14 @@ fn app_for_port(snap: &crate::collect::Snapshot, l: &ports::Listener) -> Option<
 }
 
 /// Saved monitors with their latest status.
-pub async fn monitors(State(ctx): State<AppState>) -> Json<Value> {
+pub async fn monitors(State(ctx): State<AppState>, Extension(v): Extension<Viewer>) -> Json<Value> {
+    let snap = ctx.sh.snapshot();
+    if !v.admin {
+        // Anonymous viewers (open mode) never see URLs, hosts or paths.
+        return Json(json!({ "monitors": [], "status": snap.public().monitors }));
+    }
     let list = ctx.sh.monitors().list().to_vec();
-    Json(json!({ "monitors": list, "status": ctx.sh.snapshot().monitors }))
+    Json(json!({ "monitors": list, "status": snap.monitors }))
 }
 
 /// Adds a monitor (admin only).

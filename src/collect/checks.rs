@@ -302,22 +302,20 @@ fn tls_config() -> Arc<rustls::ClientConfig> {
 /// Size and age of a log file monitor's target.
 pub fn check_logfile(path: &str) -> CheckResult {
     let t = Instant::now();
-    match std::fs::metadata(path) {
-        Ok(m) if m.is_file() => {
-            let age = m.modified().ok().and_then(|t| t.elapsed().ok()).map(|d| d.as_secs()).unwrap_or(0);
-            let readable = std::fs::File::open(path).is_ok();
-            CheckResult {
-                up: readable,
-                ms: t.elapsed().as_secs_f32() * 1000.0,
-                detail: if readable {
-                    format!("{} KB, updated {} ago", m.len() / 1024, crate::util::fmt_age(age))
-                } else {
-                    "not readable by vps-watcher".into()
-                },
-            }
+    // Same safe open as the log viewer: a swapped-in symlink or FIFO can neither leak nor hang us.
+    let file = match crate::util::open_regular(Path::new(path)) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            return CheckResult::down(t, "not readable by vps-watcher");
         }
-        Ok(_) => CheckResult::down(t, "not a regular file"),
-        Err(e) => CheckResult::down(t, e.to_string()),
+        Err(e) => return CheckResult::down(t, e.to_string()),
+    };
+    let Ok(m) = file.metadata() else { return CheckResult::down(t, "cannot read file details") };
+    let age = m.modified().ok().and_then(|t| t.elapsed().ok()).map(|d| d.as_secs()).unwrap_or(0);
+    CheckResult {
+        up: true,
+        ms: t.elapsed().as_secs_f32() * 1000.0,
+        detail: format!("{} KB, updated {} ago", m.len() / 1024, crate::util::fmt_age(age)),
     }
 }
 

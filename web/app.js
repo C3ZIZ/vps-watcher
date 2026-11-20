@@ -791,8 +791,8 @@ function pageOverview(view) {
     banner.hidden = !notes.length;
     banner.textContent = notes.join(' · ');
 
-    const disk = [...s.disks].sort((a, b) => b.used / b.total - a.used / a.total)[0];
-    const diskPct = disk ? (disk.used * 100) / disk.total : 0;
+    const disk = [...s.disks].sort((a, b) => b.pct - a.pct)[0];
+    const diskPct = disk ? disk.pct : 0;
     const memPct = s.mem.total ? (s.mem.used * 100) / s.mem.total : 0;
     const [pv, pu] = splitPct(s.cpu.total);
     fill(kpis, 
@@ -825,7 +825,7 @@ function pageOverview(view) {
         : h('p', { class: 'muted small', text: 'No monitors yet. Add a URL, port, process or log file to watch.' }));
     const disks = h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { text: 'Disks' })),
       h('div', { class: 'stack' }, s.disks.map((d) => {
-        const p = (d.used * 100) / d.total;
+        const p = d.pct;
         return h('div', {}, h('div', { class: 'row' }, h('b', { text: d.mount }), h('span', { class: 'muted small', text: d.fstype }), h('span', { class: 'spacer' }),
           h('span', { class: 'num small', text: `${fmt.bytes(d.used)} / ${fmt.bytes(d.total)} · ${fmt.pct(p)}` })), meter(p),
           d.inodes_pct > 80 ? h('p', { class: 'small', style: { color: 'var(--warn)' }, text: `Inodes ${fmt.pct(d.inodes_pct)} used` }) : null);
@@ -1140,7 +1140,7 @@ function pageSystem(view, q) {
   function showDisks() {
     const t = sortableTable([
       { key: 'mount', label: 'Mount', get: (d) => d.mount, render: (d) => nameCell(d.mount, `${d.device} · ${d.fstype}`) },
-      { key: 'used', label: 'Used', num: true, get: (d) => d.used / d.total, render: (d) => h('div', {}, `${fmt.bytes(d.used)} of ${fmt.bytes(d.total)} · ${fmt.pct((d.used * 100) / d.total)}`, meter((d.used * 100) / d.total)) },
+      { key: 'used', label: 'Used', num: true, get: (d) => d.pct, render: (d) => h('div', {}, `${fmt.bytes(d.used)} of ${fmt.bytes(d.total)} · ${fmt.pct(d.pct)}`, meter(d.pct)) },
       { key: 'avail', label: 'Free', num: true, get: (d) => d.avail, render: (d) => fmt.bytes(d.avail) },
       { key: 'inodes', label: 'Inodes used', num: true, get: (d) => d.inodes_pct, render: (d) => fmt.pct(d.inodes_pct) },
     ], { id: 'disks', defaultSort: 'used:desc', empty: 'No disks found.' });

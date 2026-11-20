@@ -179,8 +179,10 @@ How:
 ## Security
 
 - **Network.** Listens on `127.0.0.1` by default. Public access goes through your HTTPS reverse proxy.
-- **First run.** The admin can be created only from a direct localhost connection.
-- **Passwords.** argon2id (19 MiB, 2 passes), at least 12 characters, and logins limited to 10 failures per IP per 15 minutes.
+- **First run.** The admin can be created only from a direct localhost connection. Create it right after installing.
+- **Passwords.** argon2id (19 MiB, 2 passes), at least 12 characters. Logins are limited to 10 attempts per IP (per /64 for IPv6) per 15 minutes, with at most two password checks at a time.
+- **Abuse limits.** 16 KB request bodies, 10 seconds to send headers, 30 seconds per request, 256 connections and 32 live streams at most.
+- **Log files** are opened without following symbolic links, so a swapped file cannot expose `/etc/shadow` or hang the service.
 - **Sessions.** Random 256-bit tokens in HttpOnly, SameSite=Strict cookies, marked Secure behind HTTPS, ending after 7 idle days. Changing your password signs out every other session.
 - **Browser protection.** A strict Content Security Policy (no inline scripts, no third-party code), cross-site request blocking, no framing, no referrer.
 - **Least privilege.** The service runs as its own user under a read-only, sandboxed systemd unit. It only reads; it never starts, stops or changes your apps.

@@ -7,15 +7,17 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
-pub use persist::{load, save};
+pub use persist::{encode, load, write};
 use ring::Ring;
 
 /// (bucket seconds, bucket count) for each tier: 5s×1h, 1m×48h, 15m×30d.
 const TIERS: [(u64, usize); 3] = [(5, 720), (60, 2880), (900, 2880)];
-/// Hard cap so container churn cannot grow memory without bound.
-pub const MAX_SERIES: usize = 1500;
+/// Hard cap (about 16 MB of rings) so container churn cannot grow memory without bound.
+pub const MAX_SERIES: usize = 600;
 /// Series not updated for this long are dropped.
 const IDLE_DROP_SECS: u64 = 30 * 24 * 3600;
+/// Apps that disappeared (for example short-lived containers) are dropped sooner.
+const APP_IDLE_DROP_SECS: u64 = 7 * 24 * 3600;
 
 /// A time window the UI can ask for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,7 +142,11 @@ impl History {
         }
         if !self.series.contains_key(key) {
             if self.series.len() >= MAX_SERIES {
-                return;
+                // Full: make room by evicting the series that has been quiet the longest.
+                let stalest = self.series.iter().min_by_key(|(_, s)| s.last_ts).map(|(k, _)| k.clone());
+                if let Some(k) = stalest {
+                    self.series.remove(&k);
+                }
             }
             self.series.insert(key.to_string(), Series::new());
         }
@@ -169,9 +175,12 @@ impl History {
         self.series.contains_key(key)
     }
 
-    /// Drops series idle for 30 days.
+    /// Drops series idle for 30 days, or 7 days for apps that are gone.
     pub fn prune(&mut self, now: u64) {
-        self.series.retain(|_, s| now.saturating_sub(s.last_ts) < IDLE_DROP_SECS);
+        self.series.retain(|k, s| {
+            let limit = if k.starts_with("app:") { APP_IDLE_DROP_SECS } else { IDLE_DROP_SECS };
+            now.saturating_sub(s.last_ts) < limit
+        });
     }
 
     /// Number of stored series.
@@ -217,9 +226,11 @@ mod tests {
         h.record("nan", 1, f64::NAN);
         assert!(!h.has("nan"));
         for i in 0..MAX_SERIES + 10 {
-            h.record(&format!("s{i}"), 1, 1.0);
+            h.record(&format!("s{i}"), 1 + i as u64, 1.0);
         }
         assert_eq!(h.len(), MAX_SERIES);
+        assert!(!h.has("s0"), "the stalest series made room");
+        assert!(h.has(&format!("s{}", MAX_SERIES + 9)), "new series are still recorded");
     }
 
     #[test]

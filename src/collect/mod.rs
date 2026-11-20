@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tokio::sync::watch;
 
-use crate::config::Config;
+use crate::config::{AuthMode, Config};
 use crate::store::{self, History};
 use crate::util::now;
 use crate::{info, warn};
@@ -43,6 +43,8 @@ pub struct Shared {
     pub log_files: Mutex<Vec<PathBuf>>,
     /// Bumped after every sample so live views can push updates.
     pub tick: watch::Sender<u64>,
+    /// The latest snapshot as JSON for live views: (admin, public). Built once per sample, only when watched.
+    pub live: RwLock<(Arc<str>, Arc<str>)>,
 }
 
 impl Shared {
@@ -66,12 +68,29 @@ impl Shared {
         self.cfg.data_dir.join("history.bin")
     }
 
-    /// Writes history to disk, logging (not failing) on error.
+    /// JSON for a live view; anonymous viewers get the redacted copy.
+    pub fn live_json(&self, admin: bool) -> Arc<str> {
+        let l = self.live.read().unwrap_or_else(|e| e.into_inner());
+        if admin { l.0.clone() } else { l.1.clone() }
+    }
+
+    /// Writes history to disk now, logging (not failing) on error. Used at shutdown.
     pub fn save_history(&self) {
-        let res = { store::save(&self.history(), &self.history_path()) };
-        if let Err(e) = res {
+        let buf = store::encode(&self.history());
+        if let Err(e) = store::write(&buf, &self.history_path()) {
             warn!("could not save history: {e}");
         }
+    }
+
+    /// Encodes under the lock, then writes and fsyncs on a blocking thread so slow disks stall nothing.
+    pub fn save_history_background(&self) {
+        let buf = store::encode(&self.history());
+        let path = self.history_path();
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = store::write(&buf, &path) {
+                warn!("could not save history: {e}");
+            }
+        });
     }
 }
 
@@ -101,6 +120,38 @@ pub struct Snapshot {
     pub own: OwnUsage,
 }
 
+impl Snapshot {
+    /// Copy for anonymous viewers: monitor URLs, hosts and paths are reduced to harmless labels.
+    pub fn public(&self) -> Snapshot {
+        let mut s = self.clone();
+        for m in &mut s.monitors {
+            m.target = redact_target(&m.kind, &m.target);
+            if m.kind == "logfile" {
+                m.detail.clear();
+            }
+        }
+        s
+    }
+}
+
+/// Keeps only what is safe to show publicly: scheme and host for URLs, file name for paths, port for TCP.
+fn redact_target(kind: &str, target: &str) -> String {
+    match kind {
+        "http" => target
+            .split_once("://")
+            .map(|(scheme, rest)| {
+                let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+                format!("{scheme}://{}", host.rsplit('@').next().unwrap_or(""))
+            })
+            .unwrap_or_default(),
+        "logfile" => {
+            std::path::Path::new(target).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default()
+        }
+        "tcp" => format!("port {}", target.rsplit(':').next().unwrap_or("")),
+        _ => target.to_string(),
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct Mem {
     pub total: u64,
@@ -119,6 +170,8 @@ pub struct Disk {
     pub total: u64,
     pub used: u64,
     pub avail: u64,
+    /// Used percent as `df` shows it: blocks reserved for root count as unavailable.
+    pub pct: f32,
     pub inodes_pct: f32,
 }
 
@@ -205,10 +258,14 @@ struct Prev {
     cores: Vec<CpuTimes>,
     net: HashMap<String, NetBytes>,
     disk: HashMap<String, (u64, u64)>,
-    apps: HashMap<String, (CgStats, Option<NetBytes>)>,
+    /// Per app: counters, network counters and the container id they came from.
+    apps: HashMap<String, AppPrev>,
     procs: HashMap<u32, procs::ProcStat>,
     own_ticks: u64,
 }
+
+/// Previous counters of one app; `cid` detects a container recreated under the same name.
+type AppPrev = (CgStats, Option<NetBytes>, Option<String>);
 
 /// Mutable collector state between ticks.
 struct Collector {
@@ -250,6 +307,7 @@ pub fn init(cfg: Config) -> Result<Arc<Shared>, String> {
         check_results: Mutex::default(),
         log_files: Mutex::default(),
         tick,
+        live: RwLock::new((Arc::from(""), Arc::from(""))),
     }))
 }
 
@@ -364,13 +422,23 @@ impl Collector {
         snap.own = self.own_usage(secs);
         self.record(sh, &snap);
 
+        let snap = Arc::new(snap);
+        if sh.tick.receiver_count() > 0 {
+            let admin: Arc<str> = serde_json::to_string(&*snap).unwrap_or_default().into();
+            let public: Arc<str> = if sh.cfg.auth == AuthMode::Open {
+                serde_json::to_string(&snap.public()).unwrap_or_default().into()
+            } else {
+                Arc::from("")
+            };
+            *sh.live.write().unwrap_or_else(|e| e.into_inner()) = (admin, public);
+        }
         if let Ok(mut s) = sh.snapshot.write() {
-            *s = Arc::new(snap);
+            *s = snap;
         }
         if self.saved_at.elapsed() >= SAVE_EVERY {
             self.saved_at = Instant::now();
             sh.history().prune(ts);
-            sh.save_history();
+            sh.save_history_background();
         }
     }
 
@@ -459,6 +527,7 @@ impl Collector {
                     total: u.total,
                     used: u.used,
                     avail: u.avail,
+                    pct: if u.used + u.avail > 0 { u.used as f32 * 100.0 / (u.used + u.avail) as f32 } else { 0.0 },
                     inodes_pct: if u.inodes_total > 0 {
                         u.inodes_used as f32 * 100.0 / u.inodes_total as f32
                     } else {
@@ -578,13 +647,14 @@ impl Collector {
         net: Option<NetBytes>,
         secs: f64,
         cores: f64,
-        seen: &mut HashMap<String, (CgStats, Option<NetBytes>)>,
+        seen: &mut HashMap<String, AppPrev>,
     ) {
-        let prev = self.prev.apps.get(&app.id);
+        // A recreated container has fresh counters; never diff across two different containers.
+        let prev = self.prev.apps.get(&app.id).filter(|p| p.2 == app.container_id);
         app.mem = Some(st.mem);
         app.mem_limit = st.mem_limit;
         app.pids = Some(st.pids);
-        if let Some((p, pn)) = prev {
+        if let Some((p, pn, _)) = prev {
             app.cpu_pct = rate(Some(p.cpu_usec), st.cpu_usec, secs).map(|us| (us / 1e6 / cores * 100.0) as f32);
             if let (Some(r), Some(w)) =
                 (rate(Some(p.io_read), st.io_read, secs), rate(Some(p.io_write), st.io_write, secs))
@@ -597,7 +667,7 @@ impl Collector {
                 app.net = Some(Rates { a: rx, b: tx });
             }
         }
-        seen.insert(app.id.clone(), (st, net));
+        seen.insert(app.id.clone(), (st, net, app.container_id.clone()));
     }
 
     /// Common cgroup locations of a container when /proc/<pid>/cgroup was unreadable.
@@ -615,6 +685,12 @@ impl Collector {
         let procs_now = if want_procs { procs::snapshot() } else { HashMap::new() };
         let cpu = if want_procs { procs::cpu_between(&self.prev.procs, &procs_now, secs) } else { HashMap::new() };
         let page = procs::page_size();
+        // Read each command line once per sample, however many process monitors there are.
+        let haystacks: Vec<(u32, String)> = procs_now
+            .iter()
+            .filter(|(pid, _)| **pid != std::process::id())
+            .map(|(pid, p)| (*pid, format!("{}\0{}", p.name, procs::cmdline(*pid).unwrap_or_default()).to_lowercase()))
+            .collect();
 
         for m in list {
             let (kind, target) = match &m.kind {
@@ -632,15 +708,8 @@ impl Collector {
             };
             if let MonitorKind::Process { pattern } = &m.kind {
                 let pat = pattern.to_lowercase();
-                let matched: Vec<u32> = procs_now
-                    .iter()
-                    .filter(|(pid, p)| {
-                        p.name.to_lowercase().contains(&pat)
-                            || procs::cmdline(**pid).is_some_and(|c| c.to_lowercase().contains(&pat))
-                    })
-                    .map(|(pid, _)| *pid)
-                    .filter(|pid| *pid != std::process::id())
-                    .collect();
+                let matched: Vec<u32> =
+                    haystacks.iter().filter(|(_, hay)| hay.contains(&pat)).map(|(pid, _)| *pid).collect();
                 st.up = Some(!matched.is_empty());
                 st.cpu_pct = Some(matched.iter().filter_map(|p| cpu.get(p)).sum());
                 st.mem = Some(matched.iter().filter_map(|p| procs_now.get(p)).map(|p| p.rss_pages * page).sum());
@@ -693,7 +762,7 @@ impl Collector {
         h.record("host.disk.read", ts, s.disk_io.a);
         h.record("host.disk.write", ts, s.disk_io.b);
         for d in &s.disks {
-            h.record(&format!("disk:{}.used", d.mount), ts, d.used as f64 * 100.0 / d.total as f64);
+            h.record(&format!("disk:{}.used", d.mount), ts, d.pct as f64);
         }
         for a in s.apps.iter().filter(|a| a.state == "running") {
             if let Some(v) = a.cpu_pct {
@@ -734,4 +803,20 @@ fn container_net(pid: u32) -> Option<NetBytes> {
         }
     }
     Some(sum)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_view_hides_targets() {
+        assert_eq!(
+            redact_target("http", "https://user:pw@api.example.com:8443/health?token=abc"),
+            "https://api.example.com:8443"
+        );
+        assert_eq!(redact_target("logfile", "/srv/app/secret/app.log"), "app.log");
+        assert_eq!(redact_target("tcp", "10.0.0.5:5432"), "port 5432");
+        assert_eq!(redact_target("process", "node"), "node");
+    }
 }

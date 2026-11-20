@@ -3,11 +3,11 @@
 mod api;
 mod assets;
 
-use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
-use axum::extract::{Request, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::Response;
@@ -16,7 +16,16 @@ use axum::routing::{delete, get, post};
 use crate::auth::Auth;
 use crate::collect::{self, Shared};
 use crate::config::{AuthMode, Config};
-use crate::info;
+use crate::{info, warn};
+
+/// Open connections allowed at once; more are closed immediately.
+const MAX_CONNECTIONS: usize = 256;
+/// Time a client gets to send request headers.
+const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
+/// Time a request (including its body) may take before it is answered with 408.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Largest request body; the API only ever receives small JSON.
+const MAX_BODY: usize = 16 * 1024;
 
 /// Everything handlers need.
 pub struct Ctx {
@@ -57,14 +66,39 @@ pub fn serve(cfg: Config) -> Result<(), String> {
         tokio::spawn(collect::run(sh.clone()));
         tokio::spawn(collect::run_checks(sh.clone()));
         let state: AppState = Arc::new(Ctx { sh: sh.clone(), auth });
-        let app = router(state).into_make_service_with_connect_info::<SocketAddr>();
         tokio::select! {
-            r = axum::serve(listener, app).into_future() => r.map_err(|e| e.to_string())?,
+            _ = accept_loop(listener, router(state)) => {}
             _ = shutdown_signal() => info!("shutting down"),
         }
         sh.save_history();
         Ok(())
     })
+}
+
+/// Accepts connections with a cap, and serves each with header and keep-alive timeouts.
+async fn accept_loop(listener: tokio::net::TcpListener, app: Router) {
+    let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
+    loop {
+        let (stream, peer) = match listener.accept().await {
+            Ok(c) => c,
+            Err(e) => {
+                // Usually EMFILE; back off instead of spinning.
+                warn!("accept failed: {e}");
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                continue;
+            }
+        };
+        let Ok(slot) = slots.clone().try_acquire_owned() else { continue };
+        let svc = hyper_util::service::TowerToHyperService::new(app.clone().layer(axum::Extension(ConnectInfo(peer))));
+        tokio::spawn(async move {
+            let conn = hyper::server::conn::http1::Builder::new()
+                .timer(hyper_util::rt::TokioTimer::new())
+                .header_read_timeout(HEADER_TIMEOUT)
+                .serve_connection(hyper_util::rt::TokioIo::new(stream), svc);
+            let _ = conn.await;
+            drop(slot);
+        });
+    }
 }
 
 /// Resolves on Ctrl-C or SIGTERM.
@@ -104,6 +138,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/report", get(api::report))
         .route("/api/report.csv", get(api::report_csv))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
+        .layer(DefaultBodyLimit::max(MAX_BODY))
         .with_state(state)
 }
 
@@ -138,7 +173,11 @@ async fn guard(State(ctx): State<AppState>, mut req: Request, next: Next) -> Res
         }
     }
     req.extensions_mut().insert(Viewer { admin, token });
-    secure(next.run(req).await)
+    // Bounds slow request bodies; streaming responses (live updates) return before this fires.
+    match tokio::time::timeout(REQUEST_TIMEOUT, next.run(req)).await {
+        Ok(res) => secure(res),
+        Err(_) => secure(api::err(StatusCode::REQUEST_TIMEOUT, "Request took too long.")),
+    }
 }
 
 /// Adds strict security headers to every response.
