@@ -25,6 +25,7 @@ Most monitoring stacks cost a small VPS a big share of its CPU and RAM. vps-watc
 - [Alerts and email reports](#alerts-and-email-reports)
 - [Using an AI assistant](#using-an-ai-assistant)
 - [Settings](#settings)
+- [Updates](#updates)
 - [Upgrade, reset or remove](#upgrade-reset-or-remove)
 - [How it stays light](#how-it-stays-light)
 - [Security](#security)
@@ -211,14 +212,41 @@ All settings live in `/etc/vps-watcher/vps-watcher.env`. Run `sudo systemctl res
 | `VPSW_SMTP_OAUTH_CLIENT_ID`, `_CLIENT_SECRET`, `_REFRESH_TOKEN`, `_TOKEN_URL` | | OAuth2 sign-in instead of a password |
 | `VPSW_WEBHOOK_URL`, `_FORMAT`, `_SECRET`, `_TOKEN` | | Webhook target, format, signing key and bearer token |
 | `VPSW_REPORT` | `off` | Email a usage report `daily` or `weekly` |
+| `VPSW_UPDATE_CHECK` | `true` | Check once a day for a newer release |
+| `VPSW_AUTO_UPDATE` | `false` | Install signed releases automatically once a day |
+| `VPSW_UPDATE_URL` | | A mirror serving the same release files; signatures are still required |
 
 Run `sudo vps-watcher config` after editing. It checks the file and prints the effective settings with every secret hidden. You can also change one setting at a time without opening the file: `sudo vps-watcher set VPSW_DOMAIN watch.example.com`. For secrets, leave out the value and type it at the hidden prompt.
+
+## Updates
+
+vps-watcher checks once a day whether a newer release exists. When one does, the admin sees a banner on the Overview and in **Settings → Updates**, and your alert email or webhook gets one notice per release.
+
+**Upgrade with one command** on the server:
+
+```sh
+sudo vps-watcher upgrade           # or: sudo vps-watcher upgrade --check
+```
+
+**Or let it update itself.** Set `VPSW_AUTO_UPDATE=true` (`sudo vps-watcher set VPSW_AUTO_UPDATE true`). A systemd timer then installs new releases once a day at a random time, and your alert channels hear about each update.
+
+Each upgrade, manual or automatic, is protected in three ways:
+
+- **Signed releases only.** Every release carries a list of its files and their SHA-256 hashes, signed with the maintainer's Ed25519 key. That key stays on the maintainer's machine, never on GitHub. Before signing, the maintainer checks two things:
+  - each binary was built by this repository's release workflow from the tagged commit (GitHub build attestation)
+  - every other file matches the tagged source
+
+  vps-watcher refuses a release whose signature, file hashes or version name do not match. So a file swapped on GitHub after signing, or a release published with a stolen GitHub account, is never installed.
+- **No downgrades.** It only ever moves to a newer version.
+- **Rollback.** Every file is downloaded, verified and test-run before anything changes. If the new version fails to start, or restarts within its first 20 seconds, the previous binary, service files and permissions are put back and the service restarts.
+
+Turn the daily check off with `VPSW_UPDATE_CHECK=false`. The check is one request to GitHub for the latest release name. GitHub sees the server's IP address and vps-watcher version, nothing else. Only the admin sees the running version and update status; public viewers in open mode do not.
 
 ## Upgrade, reset or remove
 
 | Task | Command |
 |---|---|
-| Upgrade | Run the install command again. Settings and history are kept. Settings added in new versions are listed in `/etc/vps-watcher/vps-watcher.env.example` |
+| Upgrade | `sudo vps-watcher upgrade` (signed releases only), or run the install command again. Settings and history are kept. Settings added in new versions are listed in `/etc/vps-watcher/vps-watcher.env.example` |
 | Check settings | `sudo vps-watcher config` (secrets hidden) |
 | Test alerts | `sudo vps-watcher test-alert` |
 | Forgot password | `sudo vps-watcher reset-admin && sudo systemctl restart vps-watcher`, then create the admin again through the SSH tunnel |

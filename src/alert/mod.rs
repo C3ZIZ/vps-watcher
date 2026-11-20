@@ -148,6 +148,11 @@ impl Notifier {
             .map_err(|_| "The test took too long. Check the server address and port, then try again.".to_string())
     }
 
+    /// Sends one notice right away, within the hourly limit and with retries.
+    pub async fn notify(&self, ev: Event) {
+        self.deliver(std::slice::from_ref(&ev), &Context::default(), false).await;
+    }
+
     /// Emails a usage report now. Reports go by email only; webhooks are for alerts.
     pub async fn send_report(&self, r: &crate::report::Report) -> Result<(), String> {
         let m = self

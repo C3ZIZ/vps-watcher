@@ -8,7 +8,7 @@ use std::path::Path;
 use crate::config::{Config, parse_env_file};
 
 /// Every setting vps-watcher reads.
-pub const KEYS: [&str; 31] = [
+pub const KEYS: [&str; 34] = [
     "VPSW_LISTEN",
     "VPSW_AUTH",
     "VPSW_OPEN_LOGS",
@@ -40,6 +40,9 @@ pub const KEYS: [&str; 31] = [
     "VPSW_WEBHOOK_FORMAT",
     "VPSW_WEBHOOK_SECRET",
     "VPSW_WEBHOOK_TOKEN",
+    "VPSW_UPDATE_CHECK",
+    "VPSW_AUTO_UPDATE",
+    "VPSW_UPDATE_URL",
 ];
 
 /// Settings whose values must never be shown or passed as arguments.

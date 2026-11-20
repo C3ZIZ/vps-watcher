@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily check for a signed vps-watcher update
+
+[Timer]
+OnCalendar=daily
+# Spread servers over the day, and catch up after the machine was off.
+RandomizedDelaySec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

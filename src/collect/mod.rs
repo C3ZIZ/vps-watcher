@@ -50,6 +50,8 @@ pub struct Shared {
     pub notifier: Arc<Notifier>,
     /// Events for the delivery task; full means delivery is stuck, so new events are dropped.
     pub alert_tx: mpsc::Sender<alert::Batch>,
+    /// Result of the latest release check.
+    pub update: Mutex<crate::update::Status>,
 }
 
 impl Shared {
@@ -343,6 +345,7 @@ pub fn init(cfg: Config) -> Result<(Arc<Shared>, mpsc::Receiver<alert::Batch>), 
         alerts: Mutex::new(alerts),
         notifier,
         alert_tx,
+        update: Mutex::new(crate::update::Status { current: crate::VERSION, ..Default::default() }),
     });
     Ok((sh, alert_rx))
 }

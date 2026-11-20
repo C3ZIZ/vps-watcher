@@ -1,12 +1,18 @@
 name: Release
 
 # scripts/tag-release.sh publishes the GitHub Release; this attaches the binaries to it.
+# Signing happens afterwards on the maintainer's machine (scripts/sign-release.sh), which first checks
+# each binary's build attestation and every other file against the tagged source. The key never
+# touches GitHub, so files changed on GitHub after that check can never be installed by servers.
 on:
   release:
     types: [published]
 
 permissions:
   contents: write
+  # Build attestations: a signed record that this workflow built each binary from the tagged commit.
+  id-token: write
+  attestations: write
 
 jobs:
   build:
@@ -38,11 +44,16 @@ jobs:
         run: VPSW_VERSION="$TAG" cargo build --release --locked --target "$TARGET"
       - name: Smoke test
         run: ./target/"$TARGET"/release/vps-watcher version
-      - name: Upload
+      - name: Prepare
         run: |
           cp "target/$TARGET/release/vps-watcher" "$ASSET"
           sha256sum "$ASSET" > "$ASSET.sha256"
-          gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber --repo "$GITHUB_REPOSITORY"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ env.ASSET }}
+      - name: Upload
+        run: gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber --repo "$GITHUB_REPOSITORY"
 
   packaging:
     runs-on: ubuntu-latest
@@ -55,4 +66,7 @@ jobs:
           ref: ${{ github.event.release.tag_name }}
           persist-credentials: false
       - name: Upload service, settings and installer
-        run: gh release upload "$TAG" packaging/vps-watcher.service packaging/vps-watcher.env install.sh --clobber --repo "$GITHUB_REPOSITORY"
+        run: |
+          gh release upload "$TAG" packaging/vps-watcher.service packaging/vps-watcher.env \
+            packaging/vps-watcher-update.service packaging/vps-watcher-update.timer install.sh \
+            --clobber --repo "$GITHUB_REPOSITORY"

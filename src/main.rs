@@ -10,6 +10,7 @@ mod proxy;
 mod report;
 mod setcmd;
 mod store;
+mod update;
 mod util;
 mod web;
 
@@ -32,6 +33,7 @@ USAGE:
   vps-watcher config               Check settings and print them with secrets hidden
   vps-watcher set KEY [VALUE]      Change one setting; secrets are asked for at a hidden prompt
   vps-watcher test-alert           Send a test alert to the email and webhook in the settings
+  vps-watcher upgrade [--check]    Install the newest signed release (or only report it)
   vps-watcher version              Print the version
 
 OPTIONS:
@@ -96,6 +98,20 @@ fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         ["set", ..] => Err("use: vps-watcher set KEY [VALUE] (quote a value that contains spaces)".into()),
+        ["upgrade", flags @ ..] => {
+            let mut opts = update::Opts { check: false, auto: false };
+            for f in flags {
+                match *f {
+                    "--check" => opts.check = true,
+                    "--auto" => opts.auto = true,
+                    other => return Err(format!("unknown option '{other}'; use: vps-watcher upgrade [--check]")),
+                }
+            }
+            for line in update::upgrade(&load()?, opts)? {
+                println!("{line}");
+            }
+            Ok(())
+        }
         ["version" | "--version" | "-V"] => {
             println!("vps-watcher {VERSION}");
             Ok(())
