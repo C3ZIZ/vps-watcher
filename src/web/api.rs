@@ -354,7 +354,35 @@ pub async fn delete_monitor(
 }
 
 fn require_admin(v: &Viewer) -> ApiResult<()> {
-    if v.admin { Ok(()) } else { Err(ApiError(StatusCode::FORBIDDEN, "Only the admin can change monitors.".into())) }
+    if v.admin { Ok(()) } else { Err(ApiError(StatusCode::FORBIDDEN, "Only the admin can do this.".into())) }
+}
+
+/// Firing alerts, recent history and rules; channel details only for the admin.
+pub async fn alerts(State(ctx): State<AppState>, Extension(v): Extension<Viewer>) -> Json<Value> {
+    let (active, history, rules) = {
+        let e = ctx.sh.alerts();
+        let c = e.config();
+        let rules = json!({
+            "cpu": c.cpu, "memory": c.memory, "disk": c.disk, "after_mins": c.after_mins, "apps": c.apps,
+            "spike": c.spike, "load_per_core": c.load_per_core, "report_days": c.report_days,
+            "email": c.email.is_some(),
+        });
+        (e.active(), e.history(), rules)
+    };
+    let channels = if v.admin { ctx.sh.notifier.describe() } else { Value::Null };
+    Json(json!({ "active": active, "history": history, "rules": rules, "channels": channels }))
+}
+
+/// Sends a test alert to every channel (admin only).
+pub async fn test_alert(State(ctx): State<AppState>, Extension(v): Extension<Viewer>) -> ApiResult<Json<Value>> {
+    require_admin(&v)?;
+    let snap_ctx = crate::alert::Context::from_snapshot(&ctx.sh.snapshot());
+    let results = ctx.sh.notifier.test(&snap_ctx).await.map_err(bad)?;
+    let results: Vec<Value> = results
+        .into_iter()
+        .map(|(channel, r)| json!({ "channel": channel, "ok": r.is_ok(), "error": r.err() }))
+        .collect();
+    Ok(Json(json!({ "results": results })))
 }
 
 #[derive(Deserialize)]
@@ -378,6 +406,24 @@ pub async fn report(State(ctx): State<AppState>, Query(q): Query<ReportQuery>) -
     let (range, label) = report_range(&q)?;
     let snap = ctx.sh.snapshot();
     Ok(Json(report::build(&ctx.sh.history(), &snap, range, label, now())))
+}
+
+#[derive(Deserialize)]
+pub struct ReportEmail {
+    range: Option<String>,
+}
+
+/// Emails the report for a range to the alert recipients (admin only).
+pub async fn email_report(
+    State(ctx): State<AppState>,
+    Extension(v): Extension<Viewer>,
+    Json(q): Json<ReportEmail>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&v)?;
+    let (range, label) = report_range(&ReportQuery { range: q.range })?;
+    let r = report::build(&ctx.sh.history(), &ctx.sh.snapshot(), range, label, now());
+    ctx.sh.notifier.send_report(&r).await.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 /// The same report as a CSV download.

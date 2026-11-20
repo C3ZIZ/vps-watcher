@@ -13,7 +13,6 @@ vps-watcher is a free, open-source monitor for one VPS. You install one binary o
 
 - **More than one server.** vps-watcher watches one server per install. There is no hub and no agents.
 - **Built-in TLS.** A reverse proxy (Caddy or nginx) handles HTTPS. vps-watcher prints a ready config for either.
-- **Alert delivery.** No email or webhook alerts in v1. They are planned next.
 - **Windows and macOS hosts.** vps-watcher runs on Linux only.
 
 ## How it works
@@ -43,7 +42,22 @@ vps-watcher is a free, open-source monitor for one VPS. You install one binary o
 - A series costs about 26 KB.
 - Buckets are aligned to wall-clock time. Gaps are stored as NaN. A clock that jumps backwards never rewrites history.
 - Tiers 1 and 2 are written to `history.bin` every 5 minutes and on shutdown. The write goes to a temp file first, then a rename.
-- Series idle for 30 days are dropped. At most 1500 series are kept, so a CI box that creates thousands of short-lived containers cannot exhaust memory.
+- Series idle for 30 days are dropped. At most 600 series are kept, so a CI box that creates thousands of short-lived containers cannot exhaust memory.
+
+## Alerts
+
+- **Engine** (`src/alert/engine.rs`). After every sample, a pure state machine compares the snapshot with the rules. Each condition must hold for a while before it fires (`fire_after`) and stay normal before it clears (`clear_after`). Thresholds clear a few points lower than they fire (hysteresis), so values at the limit do not flap.
+- **Rules.** CPU, memory and load sustained for `VPSW_ALERT_AFTER` minutes. CPU and memory spikes after 1 minute. Disk space and inodes. Monitors after about two failed checks. Containers seen running that stop. Unhealthy containers, restarts and OOM kills (rate-limited notices), failed systemd units and an unreachable Docker.
+- **State** (`alerts.json`, 0600). Holds the firing alerts, the last 200 events and the containers seen running, so a restart never re-sends an alert. Conditions whose subject disappears (a deleted monitor, a removed container) end quietly.
+- **Delivery** (`src/alert/mod.rs`). Events go through a bounded queue to one task. It batches events within 10 seconds and sends to every channel at once. It retries twice (after 10 s and 60 s) and sends at most 30 messages an hour. Each message carries a snapshot of the server's state and busiest apps.
+- **Email** (`smtp.rs`, `html.rs`). A small SMTP client with STARTTLS or implicit TLS (rustls with webpki roots, always verified) and AUTH PLAIN, LOGIN or XOAUTH2.
+  - It refuses data that arrives before the TLS handshake (STARTTLS injection).
+  - It never sends credentials unencrypted to another machine.
+  - Messages are `multipart/alternative`: plain text plus inline-styled HTML tables. Both parts are base64, so no line can end `DATA` early. Headers are RFC 2047 encoded and stripped of CR/LF.
+- **OAuth2** (`oauth.rs`). Access tokens come from a refresh token, are cached until a minute before expiry, and refresh by themselves. A rotated refresh token is saved in `smtp-oauth.json` (0600), tied to a SHA-256 fingerprint of the env value it replaces.
+- **Webhooks** (`webhook.rs`). Slack, Discord, plain text (ntfy) or JSON, picked from the URL. Optional HMAC-SHA256 signature over `timestamp.body`. Errors name the host only, because the URL is a secret.
+- **Reports.** The same report as the Reports page, rendered as HTML tables with capacity advice. It is emailed on demand (`POST /api/report/email`) or every day or week (`VPSW_REPORT`). The last send time is kept in `report-sent`.
+- **Secrets.** Settings hold secrets in a `Secret` type whose `Debug` output is a placeholder. `vps-watcher config`, the Alerts page and all error messages show only that a secret is set.
 
 ## Security
 
@@ -72,6 +86,7 @@ vps-watcher is a free, open-source monitor for one VPS. You install one binary o
 | `VPSW_DOMAIN` | | Domain used by `vps-watcher proxy caddy` or `proxy nginx` |
 | `VPSW_TRUSTED_PROXIES` | `127.0.0.1,::1` | Addresses whose forwarding headers are trusted |
 | `VPSW_DOCKER_SOCKET` | `/var/run/docker.sock` | Path to the Docker socket |
+| `VPSW_ALERT_*`, `VPSW_SMTP_*`, `VPSW_WEBHOOK_*`, `VPSW_REPORT` | see [alerts.md](alerts.md) | Alert rules, channels and scheduled reports |
 
 ## Edge cases handled
 
@@ -105,3 +120,6 @@ All JSON is under `/api`, plus one SSE stream.
 | DELETE | `/api/monitors/{id}` | Remove a monitor (admin) |
 | GET | `/api/report?range=…` | Averages, peaks, availability, disk forecast |
 | GET | `/api/report.csv?range=…` | The same report as CSV |
+| POST | `/api/report/email` | Email the report for `{"range": …}` to the alert recipients (admin) |
+| GET | `/api/alerts` | Firing alerts, history and rules; channel details for the admin |
+| POST | `/api/alerts/test` | Send a test alert to every channel (admin) |

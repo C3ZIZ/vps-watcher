@@ -5,6 +5,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::alert::AlertConfig;
+
 /// Default env file the installer creates.
 pub const DEFAULT_ENV_FILE: &str = "/etc/vps-watcher/vps-watcher.env";
 
@@ -28,6 +30,7 @@ pub struct Config {
     pub domain: Option<String>,
     pub trusted_proxies: Vec<IpAddr>,
     pub docker_socket: PathBuf,
+    pub alerts: AlertConfig,
 }
 
 impl Config {
@@ -76,6 +79,8 @@ impl Config {
             return Err(format!("VPSW_DOMAIN '{d}' should be a bare host like watch.example.com"));
         }
 
+        let alerts = AlertConfig::from_vals(&val)?;
+
         Ok(Config {
             listen,
             data_dir: val("VPSW_DATA_DIR").unwrap_or_else(|| "/var/lib/vps-watcher".into()).into(),
@@ -85,7 +90,24 @@ impl Config {
             domain,
             trusted_proxies,
             docker_socket: val("VPSW_DOCKER_SOCKET").unwrap_or_else(|| "/var/run/docker.sock".into()).into(),
+            alerts,
         })
+    }
+
+    /// Effective settings for `vps-watcher config`. Secrets appear only as "set (hidden)".
+    pub fn summary(&self) -> Vec<(&'static str, String)> {
+        let mut v = vec![
+            ("Listen", self.listen.to_string()),
+            ("Access", if self.auth == AuthMode::Open { "open (public view)".into() } else { "login".into() }),
+            ("Open logs", self.open_logs.to_string()),
+            ("Domain", self.domain.clone().unwrap_or_else(|| "(none)".into())),
+            ("Interval", format!("{} s", self.interval.as_secs())),
+            ("Data dir", self.data_dir.display().to_string()),
+            ("Docker socket", self.docker_socket.display().to_string()),
+            ("Alert rules", crate::alert::rules_summary(&self.alerts)),
+        ];
+        v.extend(crate::alert::channels_summary(&self.alerts));
+        v
     }
 }
 

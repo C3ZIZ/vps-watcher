@@ -1,19 +1,12 @@
 //! Monitors the user adds by hand: TCP port, HTTP(S) URL, process match and log file.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use http_body_util::Empty;
-use hyper::body::Bytes;
-use hyper::{Request, header};
-use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
-use tokio_rustls::TlsConnector;
-use tokio_rustls::rustls::{self, pki_types::ServerName};
 
+use crate::net::{self, is_valid_host, parse_url};
 use crate::util::{atomic_write, random_hex};
 
 /// Seconds a single check may take.
@@ -88,12 +81,6 @@ impl Monitor {
         }
         Ok(())
     }
-}
-
-/// Host names and IP literals only; no schemes, paths or spaces.
-fn is_valid_host(h: &str) -> bool {
-    let h = h.trim_start_matches('[').trim_end_matches(']');
-    !h.is_empty() && h.len() <= 253 && h.bytes().all(|b| b.is_ascii_alphanumeric() || b".-:_".contains(&b))
 }
 
 /// Saved list of monitors (monitors.json in the data dir).
@@ -175,61 +162,6 @@ pub async fn check_tcp(host: &str, port: u16) -> CheckResult {
     }
 }
 
-/// Parts of an http(s) URL.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Url {
-    pub https: bool,
-    pub host: String,
-    pub port: u16,
-    pub path: String,
-}
-
-/// Parses `http(s)://host[:port][/path]`; IPv6 hosts go in brackets.
-pub fn parse_url(s: &str) -> Result<Url, String> {
-    let bad = || "URL must look like https://example.com/health".to_string();
-    let s = s.trim();
-    let (https, rest) = if let Some(r) = s.strip_prefix("https://") {
-        (true, r)
-    } else if let Some(r) = s.strip_prefix("http://") {
-        (false, r)
-    } else {
-        return Err(bad());
-    };
-    let (authority, path) = match rest.find(['/', '?']) {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, "/"),
-    };
-    if authority.contains('@') {
-        return Err("URLs with user:password are not supported.".into());
-    }
-    let (host, port) = if let Some(end) = authority.strip_prefix('[').and_then(|a| a.find(']')) {
-        let host = &authority[..end + 2];
-        let after = &authority[end + 2..];
-        (host.to_string(), after.strip_prefix(':').map(str::parse::<u16>))
-    } else {
-        match authority.rsplit_once(':') {
-            Some((h, p)) => (h.to_string(), Some(p.parse::<u16>())),
-            None => (authority.to_string(), None),
-        }
-    };
-    let port = match port {
-        None => {
-            if https {
-                443
-            } else {
-                80
-            }
-        }
-        Some(Ok(p)) if p > 0 => p,
-        Some(_) => return Err(bad()),
-    };
-    if !is_valid_host(&host) || path.contains(' ') {
-        return Err(bad());
-    }
-    let path = if path.starts_with('?') { format!("/{path}") } else { path.to_string() };
-    Ok(Url { https, host, port, path })
-}
-
 /// Requests `url` and reports up when the status matches (default: below 400).
 pub async fn check_http(url: &str, expect: Option<u16>) -> CheckResult {
     let t = Instant::now();
@@ -251,52 +183,8 @@ pub async fn check_http(url: &str, expect: Option<u16>) -> CheckResult {
 }
 
 /// Connects (with TLS for https) and returns the response status code.
-async fn fetch_status(u: &Url) -> Result<u16, String> {
-    let host = u.host.trim_start_matches('[').trim_end_matches(']').to_string();
-    let tcp = TcpStream::connect((host.as_str(), u.port)).await.map_err(|e| e.to_string())?;
-    let default_port = if u.https { 443 } else { 80 };
-    let host_header = if u.port == default_port { u.host.clone() } else { format!("{}:{}", u.host, u.port) };
-    if u.https {
-        let name = ServerName::try_from(host).map_err(|_| "invalid TLS server name".to_string())?;
-        let tls = TlsConnector::from(tls_config()).connect(name, tcp).await.map_err(|e| format!("TLS: {e}"))?;
-        send_get(tls, &host_header, &u.path).await
-    } else {
-        send_get(tcp, &host_header, &u.path).await
-    }
-}
-
-/// Sends a GET over an established stream and returns only the status.
-async fn send_get<S>(io: S, host: &str, path: &str) -> Result<u16, String>
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    let (mut tx, conn) = hyper::client::conn::http1::handshake(TokioIo::new(io)).await.map_err(|e| e.to_string())?;
-    tokio::spawn(async move {
-        let _ = conn.await;
-    });
-    let req = Request::get(path)
-        .header(header::HOST, host)
-        .header(header::USER_AGENT, concat!("vps-watcher/", env!("CARGO_PKG_VERSION")))
-        .header(header::CONNECTION, "close")
-        .body(Empty::<Bytes>::new())
-        .map_err(|e| e.to_string())?;
-    let res = tx.send_request(req).await.map_err(|e| e.to_string())?;
-    Ok(res.status().as_u16())
-}
-
-/// Shared TLS client settings with the Mozilla root store, built once.
-fn tls_config() -> Arc<rustls::ClientConfig> {
-    static CFG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
-    CFG.get_or_init(|| {
-        let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
-        let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .with_safe_default_protocol_versions()
-            .expect("ring supports the default TLS versions")
-            .with_root_certificates(roots)
-            .with_no_client_auth();
-        Arc::new(cfg)
-    })
-    .clone()
+async fn fetch_status(u: &net::Url) -> Result<u16, String> {
+    net::request(hyper::Method::GET, u, &[], None, 0).await.map(|r| r.status)
 }
 
 /// Size and age of a log file monitor's target.
@@ -322,21 +210,6 @@ pub fn check_logfile(path: &str) -> CheckResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn url_parsing() {
-        let u = parse_url("https://example.com/health?x=1").unwrap();
-        assert_eq!((u.https, u.host.as_str(), u.port, u.path.as_str()), (true, "example.com", 443, "/health?x=1"));
-        let u = parse_url("http://127.0.0.1:8080").unwrap();
-        assert_eq!((u.port, u.path.as_str()), (8080, "/"));
-        let u = parse_url("http://[::1]:9000/x").unwrap();
-        assert_eq!((u.host.as_str(), u.port), ("[::1]", 9000));
-        assert_eq!(parse_url("http://h?q").unwrap().path, "/?q");
-        for bad in ["ftp://x", "http://", "http://a b", "http://u:p@h/", "http://h:0", "http://h:99999", "example.com"]
-        {
-            assert!(parse_url(bad).is_err(), "{bad}");
-        }
-    }
 
     #[test]
     fn validation_messages() {
