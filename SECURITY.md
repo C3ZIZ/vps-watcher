@@ -4,7 +4,7 @@ vps-watcher runs on servers and reads sensitive data such as logs, process lists
 
 ## Report a vulnerability
 
-Please do not open a public issue. Use GitHub's private reporting instead: **Security → Report a vulnerability** on this repository.
+Please do not open a public issue. Use GitHub's private reporting instead: **Security → Report a vulnerability** on this repository. You can also email the maintainer, Abdulaziz Hafiz, at abdulazizhafez2004@gmail.com.
 
 Include the version (`vps-watcher version`), what an attacker can do, and the steps to reproduce it. You will get a reply within a few days. Once a fix is released, you will be credited unless you prefer otherwise.
 

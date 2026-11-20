@@ -11,6 +11,8 @@ Guidance for AI coding agents (Claude Code, Codex, Cursor, Copilot and others) w
 
 vps-watcher is a free, open-source monitor for one Linux VPS, written in Rust. One static binary runs as a hardened systemd service. It samples the host, Docker containers and systemd services every few seconds, keeps 30 days of history in fixed-size rings, and serves a small web UI. It sends alerts by email (SMTP) and webhook.
 
+**Maintainer:** Abdulaziz Hafiz ([AHafiz.sa](https://ahafiz.sa), abdulazizhafez2004@gmail.com). **License:** MIT, copyright © 2026 Abdulaziz Hafiz. Keep the copyright notice in `LICENSE`. Never remove or change author or license notices.
+
 ## Repository map
 
 | Path | Responsibility |

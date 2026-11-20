@@ -43,3 +43,7 @@ VPSW_DATA_DIR=/tmp/vw VPSW_INTERVAL=2 cargo run
 ```
 
 Run it as root, or with the provided systemd unit, to see every process, port and log.
+
+## License
+
+By contributing, you agree that your contributions are licensed under the project's [MIT License](LICENSE), copyright © 2026 Abdulaziz Hafiz.

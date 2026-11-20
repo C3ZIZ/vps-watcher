@@ -3,6 +3,7 @@ name = "vps-watcher"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
+authors = ["Abdulaziz Hafiz <abdulazizhafez2004@gmail.com>"]
 description = "A tiny, fast, secure monitor for a single VPS: host, containers, services, logs and history."
 license = "MIT"
 repository = "https://github.com/C3ZIZ/vps-watcher"

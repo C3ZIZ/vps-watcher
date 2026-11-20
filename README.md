@@ -30,6 +30,8 @@ Most monitoring stacks cost a small VPS a big share of its CPU and RAM. vps-watc
 - [Security](#security)
 - [Troubleshooting](#troubleshooting)
 - [Build from source](#build-from-source)
+- [Author](#author)
+- [License](#license)
 
 ## Features
 
@@ -287,6 +289,14 @@ cargo build --release
 
 Read [docs/design.md](docs/design.md) for the architecture and [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow.
 
+## Author
+
+vps-watcher is created and maintained by **Abdulaziz Hafiz**.
+
+- Portfolio: [AHafiz.sa](https://ahafiz.sa)
+- Email: [abdulazizhafez2004@gmail.com](mailto:abdulazizhafez2004@gmail.com)
+- GitHub: [@C3ZIZ](https://github.com/C3ZIZ)
+
 ## License
 
-[MIT](LICENSE) © Abdulaziz Hafiz
+Copyright © 2026 Abdulaziz Hafiz. The copyright stays with the author, and the code is free and open-source software under the [MIT License](LICENSE). You may use, copy, change, merge, publish, distribute, sublicense and sell copies of it, provided the copyright notice and the license text stay in all copies or substantial parts. The software comes with no warranty of any kind.
