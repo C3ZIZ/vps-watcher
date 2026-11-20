@@ -21,3 +21,18 @@ Only the latest release receives fixes. Upgrade by running the install command a
 - Log files are opened without following symbolic links and only if they are regular files, so a swapped file cannot leak other files or hang the service.
 - The service is read-only towards your apps: it sends only `GET` requests to Docker and never starts, stops or changes anything.
 - Membership in the `docker` group is effectively root on most hosts. The installer adds the service user to it so containers can be listed. If you do not want that, remove the user from the group; containers then disappear from the dashboard and everything else keeps working.
+
+## Release signing
+
+Each release's file list (`SHA256SUMS`) is signed with an Ed25519 key that the maintainer keeps offline and never stores on GitHub. Before signing, the maintainer verifies two things:
+
+- each binary's GitHub build attestation, which shows it came from this repository's release workflow and the tagged commit
+- every other file against the tagged source
+
+`vps-watcher upgrade` and automatic updates verify the signature and every file hash, refuse older versions, and roll back if the new version does not stay up.
+
+Limits:
+
+- **The installer.** The one-line installer relies on HTTPS and checksums only. After the first install, use `sudo vps-watcher upgrade`.
+- **The build.** The signature confirms the maintainer approved the files. It cannot catch a malicious change in the tagged source or its dependencies, or a compromised build workflow.
+- **Held-back updates.** Someone who controls GitHub or a mirror can stop a server from seeing new releases, which delays updates. They still cannot install anything unsigned.

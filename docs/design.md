@@ -60,6 +60,25 @@ vps-watcher is a free, open-source monitor for one VPS. You install one binary o
 - **Env file.** Parsed with systemd's `EnvironmentFile=` rules (quotes, escapes, continuations), so the CLI tests exactly what the service runs with.
 - **Secrets.** Settings hold secrets in a `Secret` type whose `Debug` output is a placeholder. `vps-watcher config`, the Alerts page and all error messages show only that a secret is set.
 
+## Updates
+
+- **Check** (`src/update.rs`). Two minutes after start, then every 24 hours plus up to an hour of jitter, the service asks GitHub's API for the latest release tag. Tags are fixed-width (`vYY.MM.DD.HH.MM`), so text order is time order. Development builds never count as outdated. Each new release is announced once: a dashboard banner for the admin, plus a notice through the alert channels. `update.json` stores which tag was announced.
+- **Signing.** `scripts/tag-release.sh` publishes the release as *not latest*. CI builds the binaries, attaches them and records a build attestation for each. Then `scripts/sign-release.sh` runs on the maintainer's machine:
+  1. It downloads every file. It checks that each binary's attestation names this repository's release workflow, the tag, and the tagged commit in the local checkout, and that every other file matches the tagged source byte for byte.
+  2. It writes `SHA256SUMS`, whose first line is `vps-watcher <tag>` followed by one hash per file.
+  3. It signs that file with an Ed25519 key that never touches GitHub, and uploads `SHA256SUMS.sig`.
+  4. It marks the release latest, so servers see it only once it is signed.
+  5. The public key is compiled into the binary.
+- **Upgrade** (`vps-watcher upgrade`, root):
+  1. Fetch the latest tag and refuse anything not newer.
+  2. Verify the signature and that the signed tag matches.
+  3. Download the binary and unit files and check each SHA-256.
+  4. Stage every file next to its target under a random name. Staged files are created exclusively and never through a symlink, and their folders must be writable only by root.
+  5. Trial-run `<new> version` with a time limit.
+  6. Rename each file into place (each rename is atomic). Reload systemd and enable the timer only if this upgrade installed it, then restart.
+  7. The service must stay active with the same PID and restart count for about 20 seconds. Otherwise every file is restored with its old contents and mode, any new files are removed, and the service restarts.
+- **Automatic updates.** `vps-watcher-update.timer` (daily, randomized up to 6 h, persistent) runs `upgrade --auto` as root under a lightly hardened oneshot unit. The command exits at once unless `VPSW_AUTO_UPDATE=true`. Network failures and a release that is not signed yet are not errors, so the unit only fails, and alerts, on a real problem. Results go to the alert channels. The monitoring service itself never gains the right to replace its own binary.
+
 ## Security
 
 - **Access modes** (`VPSW_AUTH`):
@@ -124,3 +143,4 @@ All JSON is under `/api`, plus one SSE stream.
 | POST | `/api/report/email` | Email the report for `{"range": …}` to the alert recipients (admin) |
 | GET | `/api/alerts` | Firing alerts, history and rules; channel details for the admin |
 | POST | `/api/alerts/test` | Send a test alert to every channel (admin) |
+| POST | `/api/update/check` | Check for a new release now (admin); `/api/session` carries the update status for the admin |

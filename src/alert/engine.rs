@@ -145,6 +145,15 @@ impl Engine {
         Some((self.path.clone(), serde_json::to_vec(&saved).unwrap_or_default()))
     }
 
+    /// Adds an event raised outside the rules (such as a new release) to the history.
+    pub fn record(&mut self, e: Event) {
+        self.history.push_back(e);
+        while self.history.len() > HISTORY {
+            self.history.pop_front();
+        }
+        self.dirty = true;
+    }
+
     /// Compares one sample with the rules and returns what changed.
     pub fn evaluate(&mut self, s: &Snapshot) -> Vec<Event> {
         let ts = s.ts;

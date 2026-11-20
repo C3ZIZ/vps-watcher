@@ -10,7 +10,13 @@ const LOGO: &str = include_str!("../../web/logo.svg");
 
 /// Serves a static file with a version ETag so browsers revalidate cheaply.
 fn file(headers: &HeaderMap, body: &'static str, mime: &'static str) -> Response {
-    let tag = HeaderValue::from_str(&format!("\"{}\"", crate::VERSION)).unwrap_or(HeaderValue::from_static("\"v\""));
+    // A hash, not the version itself, so the version is not public.
+    static TAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let etag = TAG.get_or_init(|| {
+        let d = ring::digest::digest(&ring::digest::SHA256, crate::VERSION.as_bytes());
+        format!("\"{}\"", d.as_ref()[..8].iter().map(|b| format!("{b:02x}")).collect::<String>())
+    });
+    let tag = HeaderValue::from_str(etag).unwrap_or(HeaderValue::from_static("\"v\""));
     if headers.get(header::IF_NONE_MATCH) == Some(&tag) {
         return StatusCode::NOT_MODIFIED.into_response();
     }
