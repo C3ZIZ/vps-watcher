@@ -133,19 +133,137 @@ fn read_env_file(path: Option<&Path>) -> Result<HashMap<String, String>, String>
     }
 }
 
-/// Parses `KEY=value` lines; skips blanks and `#` comments and strips matching quotes.
+/// Parses an env file the way systemd's `EnvironmentFile=` does, so the CLI and the service agree:
+/// `#`/`;` comments, single quotes taken literally, backslash escapes outside them, `\` line
+/// continuation, and adjacent quoted parts joined. A leading `export ` is also accepted.
 pub fn parse_env_file(text: &str) -> Vec<(String, String)> {
-    text.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .filter_map(|l| {
-            let l = l.strip_prefix("export ").unwrap_or(l);
-            let (k, v) = l.split_once('=')?;
-            let v = v.trim();
-            let v = ['"', '\''].iter().find_map(|q| v.strip_prefix(*q).and_then(|s| s.strip_suffix(*q))).unwrap_or(v);
-            Some((k.trim().to_string(), v.to_string()))
-        })
-        .collect()
+    #[derive(PartialEq)]
+    enum St {
+        PreKey,
+        Key,
+        PreValue,
+        Value,
+        ValueEscape,
+        Single,
+        Double,
+        DoubleEscape,
+        Comment,
+        CommentEscape,
+    }
+    let mut out = Vec::new();
+    let (mut st, mut key, mut val) = (St::PreKey, String::new(), String::new());
+    // Byte length of `val` before unescaped trailing whitespace, which is trimmed.
+    let mut keep = 0usize;
+    let emit = |key: &mut String, val: &mut String, keep: usize, out: &mut Vec<(String, String)>| {
+        val.truncate(keep.min(val.len()));
+        let k = key.trim();
+        let k = k.strip_prefix("export ").map_or(k, str::trim);
+        if !k.is_empty() && k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            out.push((k.to_string(), std::mem::take(val)));
+        }
+        key.clear();
+        val.clear();
+    };
+    for c in text.chars() {
+        let nl = c == '\n' || c == '\r';
+        match st {
+            St::PreKey => {
+                if c == '#' || c == ';' {
+                    st = St::Comment;
+                } else if !c.is_whitespace() {
+                    st = St::Key;
+                    key.push(c);
+                }
+            }
+            St::Key => {
+                if nl {
+                    st = St::PreKey;
+                    key.clear();
+                } else if c == '=' {
+                    st = St::PreValue;
+                    keep = 0;
+                } else {
+                    key.push(c);
+                }
+            }
+            St::PreValue => {
+                if nl {
+                    st = St::PreKey;
+                    emit(&mut key, &mut val, keep, &mut out);
+                } else if c == '\'' {
+                    st = St::Single;
+                } else if c == '"' {
+                    st = St::Double;
+                } else if c == '\\' {
+                    st = St::ValueEscape;
+                } else if !c.is_whitespace() {
+                    st = St::Value;
+                    val.push(c);
+                    keep = val.len();
+                }
+            }
+            St::Value => {
+                if nl {
+                    st = St::PreKey;
+                    emit(&mut key, &mut val, keep, &mut out);
+                } else if c == '\\' {
+                    st = St::ValueEscape;
+                } else {
+                    val.push(c);
+                    if !c.is_whitespace() {
+                        keep = val.len();
+                    }
+                }
+            }
+            St::ValueEscape => {
+                st = St::Value;
+                if !nl {
+                    val.push(c);
+                    keep = val.len();
+                }
+            }
+            St::Single => {
+                if c == '\'' {
+                    st = St::PreValue;
+                } else {
+                    val.push(c);
+                    keep = val.len();
+                }
+            }
+            St::Double => {
+                if c == '"' {
+                    st = St::PreValue;
+                } else if c == '\\' {
+                    st = St::DoubleEscape;
+                } else {
+                    val.push(c);
+                    keep = val.len();
+                }
+            }
+            St::DoubleEscape => {
+                st = St::Double;
+                if "\"\\`$".contains(c) {
+                    val.push(c);
+                } else if !nl {
+                    val.push('\\');
+                    val.push(c);
+                }
+                keep = val.len();
+            }
+            St::Comment => {
+                if c == '\\' {
+                    st = St::CommentEscape;
+                } else if nl {
+                    st = St::PreKey;
+                }
+            }
+            St::CommentEscape => st = St::Comment,
+        }
+    }
+    if matches!(st, St::PreValue | St::Value | St::ValueEscape | St::Single | St::Double | St::DoubleEscape) {
+        emit(&mut key, &mut val, keep, &mut out);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -189,5 +307,19 @@ mod tests {
             vars,
             vec![("VPSW_AUTH".into(), "open".into()), ("VPSW_DOMAIN".into(), "a.b".into()), ("X".into(), "y z".into())]
         );
+    }
+
+    #[test]
+    fn env_file_follows_systemd_rules() {
+        let get = |line: &str| parse_env_file(line).first().map(|(_, v)| v.clone());
+        assert_eq!(get(r"P=pa\ss").as_deref(), Some("pass"), "unquoted backslash escapes");
+        assert_eq!(get(r"P='pa\ss #1'").as_deref(), Some(r"pa\ss #1"), "single quotes are literal");
+        assert_eq!(get(r#"P="a\"b\\c\$d\x""#).as_deref(), Some(r#"a"b\c$d\x"#));
+        assert_eq!(get("P='ab'cd").as_deref(), Some("abcd"), "adjacent parts join");
+        assert_eq!(get("P=  a b  ").as_deref(), Some("a b"));
+        assert_eq!(get("P=1 \\\n2").as_deref(), Some("1 2"), "line continuation");
+        assert_eq!(get("P=").as_deref(), Some(""));
+        assert_eq!(parse_env_file("; c\n# c \\\nstill comment\nA=1").len(), 1);
+        assert!(parse_env_file("BAD KEY=1\n").is_empty());
     }
 }

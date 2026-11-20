@@ -43,14 +43,15 @@ pub fn is_system_unit(unit: &str) -> bool {
 }
 
 /// Names of service units systemd reports as failed; empty if systemctl is unavailable.
-pub async fn failed_units() -> Vec<String> {
+/// None when systemctl could not answer, so callers keep the last known list instead of an empty one.
+pub async fn failed_units() -> Option<Vec<String>> {
     let cmd = tokio::process::Command::new("systemctl")
         .args(["list-units", "--failed", "--type=service", "--plain", "--no-legend", "--no-pager"])
         .kill_on_drop(true)
         .output();
     match tokio::time::timeout(Duration::from_secs(5), cmd).await {
-        Ok(Ok(out)) => parse_failed(&String::from_utf8_lossy(&out.stdout)),
-        _ => Vec::new(),
+        Ok(Ok(out)) if out.status.success() => Some(parse_failed(&String::from_utf8_lossy(&out.stdout))),
+        _ => None,
     }
 }
 

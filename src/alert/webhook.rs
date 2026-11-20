@@ -32,7 +32,11 @@ pub fn payload(
     let json_body = |v: serde_json::Value| serde_json::to_vec(&v).unwrap_or_default();
     let mut headers = Vec::new();
     let (content_type, body) = match cfg.format {
-        WebhookFormat::Slack => ("application/json", json_body(json!({ "text": format!("*{subject}*\n{text}") }))),
+        WebhookFormat::Slack => {
+            // Slack reads <...> as links and mentions, so a name like <!channel> must not ping anyone.
+            let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+            ("application/json", json_body(json!({ "text": format!("*{}*\n{}", esc(subject), esc(text)) })))
+        }
         WebhookFormat::Discord => {
             let mut content = format!("**{subject}**\n{text}");
             if content.chars().count() > DISCORD_MAX {
@@ -42,7 +46,7 @@ pub fn payload(
         }
         WebhookFormat::Text => {
             // ntfy reads these headers; other receivers ignore them. Header values must be ASCII.
-            if subject.is_ascii() {
+            if subject.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
                 headers.push(("x-title", subject.to_string()));
             }
             if events.iter().any(|e| e.state == super::engine::State::Firing) {
@@ -93,7 +97,15 @@ pub async fn post(cfg: &WebhookConfig, p: Payload) -> Result<(), String> {
     if (200..300).contains(&res.status) {
         return Ok(());
     }
-    let snippet: String = String::from_utf8_lossy(&res.body).chars().filter(|c| !c.is_control()).take(150).collect();
+    // Receivers often echo the request path (the secret key) in error pages; hide it.
+    let mut snippet: String =
+        String::from_utf8_lossy(&res.body).chars().filter(|c| !c.is_control()).take(150).collect();
+    let path = cfg.parsed.path.split('?').next().unwrap_or("");
+    for secret in [path, cfg.token.as_ref().map_or("", |t| t.expose())] {
+        if secret.len() > 1 {
+            snippet = snippet.replace(secret, "[hidden]");
+        }
+    }
     Err(format!("{} answered HTTP {} {}", cfg.parsed.host, res.status, snippet).trim_end().to_string())
 }
 
@@ -140,6 +152,20 @@ mod tests {
     }
 
     #[test]
+    fn slack_text_cannot_mention_or_link() {
+        let p = payload(
+            &hook("https://x.io/h", WebhookFormat::Slack),
+            "h",
+            "<!channel> & co",
+            "<https://evil|click>",
+            &ev(),
+            None,
+        );
+        let v: serde_json::Value = serde_json::from_slice(&p.body).unwrap();
+        assert_eq!(v["text"], "*&lt;!channel&gt; &amp; co*\n&lt;https://evil|click&gt;");
+    }
+
+    #[test]
     fn discord_is_truncated_and_mentions_disabled() {
         let long = "x".repeat(5000);
         let p = payload(
@@ -171,11 +197,13 @@ mod tests {
             let (mut s, _) = l.accept().await.unwrap();
             let mut b = [0u8; 2048];
             let _ = s.read(&mut b).await;
-            let _ = s.write_all(b"HTTP/1.1 404 Not Found\r\ncontent-length: 12\r\n\r\nunknown hook").await;
+            let _ = s
+                .write_all(b"HTTP/1.1 404 Not Found\r\ncontent-length: 34\r\n\r\nCannot POST /secret-key-123 (gone)")
+                .await;
         });
         let cfg = hook(&format!("http://127.0.0.1:{port}/secret-key-123"), WebhookFormat::Json);
         let p = payload(&cfg, "h", "s", "t", &ev(), None);
         let e = post(&cfg, p).await.unwrap_err();
-        assert!(e.contains("HTTP 404 unknown hook") && !e.contains("secret-key-123"), "{e}");
+        assert!(e.contains("HTTP 404 Cannot POST [hidden]") && !e.contains("secret-key-123"), "{e}");
     }
 }

@@ -29,7 +29,7 @@ Every setting below goes in `/etc/vps-watcher/vps-watcher.env`. Edit it with `su
 | Monitor down | critical | A monitor you added fails two checks in a row (about one minute) | always on |
 | App stopped | critical | A container that was running exits, dies or keeps restarting for a minute | `VPSW_ALERT_APPS=true` |
 | App unhealthy | warning | A container's Docker health check fails for a minute | `VPSW_ALERT_APPS=true` |
-| App restarted or out of memory | warning | Docker restarted a container, or the kernel killed it for using too much memory | `VPSW_ALERT_APPS=true` |
+| App restarted or out of memory | warning | Docker restarted a container, or the kernel killed a process in a container or service for using too much memory | `VPSW_ALERT_APPS=true` |
 | Service failed | critical | systemd marks a unit as failed | `VPSW_ALERT_APPS=true` |
 | Docker unreachable | critical | The Docker socket stops answering for a minute | `VPSW_ALERT_APPS=true` |
 
@@ -42,10 +42,10 @@ CPU, memory and load alerts name the apps using the most, such as `top: web 45%,
 - **No noise from blips.** A problem must last before it alerts, and an alert clears only once things have stayed normal for a short while. A value hovering at the limit does not flap.
 - **Resolved messages.** When a problem ends you get a "Resolved" message that says how long it lasted. Restarts and out-of-memory kills are one-off notices with no resolved step.
 - **Batching.** Events that happen within 10 seconds of each other arrive as one message, so a server reboot does not send twenty emails.
-- **Limits.** At most 30 messages per hour, and at most one restart notice per app every 15 minutes. Failed deliveries are retried twice, after 10 seconds and after 1 minute.
+- **Limits.** At most 30 messages per hour, and at most one restart or out-of-memory notice per app every 15 minutes. If the hourly limit holds events back, the next message says how many. Failed deliveries are retried twice, after 10 seconds and after 1 minute.
 - **Restarts are safe.** Firing alerts are saved in `/var/lib/vps-watcher/alerts.json`, so restarting or upgrading vps-watcher does not send them again.
 - **Only real changes.** A container alerts only after vps-watcher has seen it running. An old container that exited months ago stays quiet. Units that are *already* failed when you install do alert once, because they usually need attention.
-- **Removed things end quietly.** Deleting a monitor or removing a container clears its alert without a message.
+- **Removed things end quietly.** Deleting a monitor or removing a container clears its alert without a message. A Docker outage does not: container alerts stay as they are until Docker answers again.
 
 ## Set up email
 
@@ -63,7 +63,7 @@ Email turns on when both `VPSW_ALERT_EMAIL` (who receives alerts) and `VPSW_SMTP
 
 vps-watcher always verifies the server's TLS certificate. It refuses to send a password over an unencrypted connection to another machine.
 
-If your password contains spaces, `#` or quotes, wrap it in single quotes: `VPSW_SMTP_PASSWORD='my pass#word'`.
+If your password contains spaces, `#`, `$` or backslashes, wrap it in single quotes: `VPSW_SMTP_PASSWORD='my pass#word'`. The file follows systemd's rules, so outside single quotes a backslash escapes the next character. Easier still: `sudo vps-watcher set VPSW_SMTP_PASSWORD` asks for the value at a hidden prompt and quotes it for you.
 
 ### Gmail with an app password
 
@@ -163,6 +163,8 @@ Set `VPSW_WEBHOOK_URL`. vps-watcher picks the right format from the URL:
 | Discord | `https://discord.com/api/webhooks/...` | `discord` (mentions disabled, long text trimmed) |
 | ntfy | `https://ntfy.sh/your-topic` | `text`, with title and priority headers |
 | Anything else | your endpoint | `json` |
+
+The URL must use `https://`, because it usually contains a secret key. Plain `http://` is accepted only for a receiver on the server itself (`localhost` or `127.0.0.1`).
 
 Set `VPSW_WEBHOOK_FORMAT=json|slack|discord|text` to override the choice, for example for a self-hosted ntfy. `VPSW_WEBHOOK_TOKEN` adds `Authorization: Bearer <token>`, which ntfy access tokens and many APIs use.
 

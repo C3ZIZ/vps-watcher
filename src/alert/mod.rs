@@ -64,16 +64,19 @@ pub struct Notifier {
     email_status: Mutex<ChannelStatus>,
     hook_status: Mutex<ChannelStatus>,
     sent_at: Mutex<VecDeque<u64>>,
+    /// Events dropped by the hourly limit, reported in the next message.
+    suppressed: std::sync::atomic::AtomicUsize,
     testing: AtomicBool,
 }
 
 impl Notifier {
-    /// `data_dir` keeps rotated OAuth tokens; pass None for one-off CLI runs that must not write there.
-    pub fn new(cfg: &AlertConfig, data_dir: Option<&Path>, host: &str, domain: Option<&str>) -> Self {
+    /// `data_dir` holds the rotated OAuth token; `persist` is false for one-off CLI runs, which
+    /// read it but must not create files the service user cannot read.
+    pub fn new(cfg: &AlertConfig, data_dir: Option<&Path>, persist: bool, host: &str, domain: Option<&str>) -> Self {
         let mailer = cfg.email.clone().map(|e| {
             let oauth = match &e.auth {
                 SmtpAuth::OAuth2(o) => {
-                    Some(oauth::TokenSource::new(o.clone(), data_dir.map(|d| d.join("smtp-oauth.json"))))
+                    Some(oauth::TokenSource::new(o.clone(), data_dir.map(|d| d.join("smtp-oauth.json")), persist))
                 }
                 _ => None,
             };
@@ -87,6 +90,7 @@ impl Notifier {
             email_status: Mutex::default(),
             hook_status: Mutex::default(),
             sent_at: Mutex::default(),
+            suppressed: Default::default(),
             testing: AtomicBool::new(false),
         }
     }
@@ -180,6 +184,7 @@ impl Notifier {
     async fn deliver(&self, events: &[Event], ctx: &Context, test: bool) -> Vec<(&'static str, Result<(), String>)> {
         if !test && !self.take_slot() {
             warn!("alert limit of {MAX_PER_HOUR} per hour reached; not sending {} event(s)", events.len());
+            self.suppressed.fetch_add(events.len(), Ordering::SeqCst);
             for s in [&self.email_status, &self.hook_status] {
                 if let Ok(mut s) = s.lock() {
                     s.skipped += 1;
@@ -187,6 +192,23 @@ impl Notifier {
             }
             return Vec::new();
         }
+        // Say what the hourly limit held back, so a recovery or a new failure is not missed silently.
+        let held = if test { 0 } else { self.suppressed.swap(0, Ordering::SeqCst) };
+        let mut with_note = Vec::new();
+        let events = if held > 0 {
+            with_note.extend_from_slice(events);
+            with_note.push(Event {
+                key: "suppressed".into(),
+                state: State::Notice,
+                severity: Severity::Warning,
+                title: format!("{held} earlier alert event(s) were not sent"),
+                detail: format!("The limit of {MAX_PER_HOUR} messages per hour was reached. See the Alerts page for the full history."),
+                ts: now(),
+            });
+            &with_note[..]
+        } else {
+            events
+        };
         let subject = subject(&self.host, events);
         let text = text(&self.host, events, self.link.as_deref());
         let html = html::alert_html(&self.host, events, ctx, self.link.as_deref());
@@ -402,14 +424,14 @@ mod tests {
 
     #[test]
     fn hourly_limit() {
-        let n = Notifier::new(&AlertConfig::default(), None, "h", None);
+        let n = Notifier::new(&AlertConfig::default(), None, false, "h", None);
         assert!((0..MAX_PER_HOUR).all(|_| n.take_slot()));
         assert!(!n.take_slot());
     }
 
     #[tokio::test]
     async fn test_without_channels_explains_setup() {
-        let n = Notifier::new(&AlertConfig::default(), None, "h", None);
+        let n = Notifier::new(&AlertConfig::default(), None, false, "h", None);
         assert!(n.test(&Context::default()).await.unwrap_err().contains("No alert channel"));
     }
 
@@ -426,7 +448,7 @@ mod tests {
         .into_iter()
         .collect();
         let c = AlertConfig::from_vals(&|k| m.get(k).map(|v| v.to_string())).unwrap();
-        let all = format!("{:?} {}", channels_summary(&c), Notifier::new(&c, None, "h", None).describe());
+        let all = format!("{:?} {}", channels_summary(&c), Notifier::new(&c, None, false, "h", None).describe());
         for secret in ["app-password-xyz", "secretpath", "hmac-key"] {
             assert!(!all.contains(secret), "{secret} leaked: {all}");
         }

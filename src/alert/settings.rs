@@ -122,7 +122,7 @@ impl WebhookFormat {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct WebhookConfig {
     /// The whole URL is secret: Slack and Discord put the key in the path.
     pub url: Secret,
@@ -132,6 +132,16 @@ pub struct WebhookConfig {
     pub signing_secret: Option<Secret>,
     /// Sent as `Authorization: Bearer <token>` when set.
     pub token: Option<Secret>,
+}
+
+impl std::fmt::Debug for WebhookConfig {
+    // The parsed URL holds the secret path, so only the host is shown.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebhookConfig")
+            .field("host", &self.parsed.host)
+            .field("format", &self.format)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AlertConfig {
@@ -295,6 +305,10 @@ fn webhook(val: &dyn Fn(&str) -> Option<String>) -> Result<Option<WebhookConfig>
     let Some(url) = val("VPSW_WEBHOOK_URL") else { return Ok(None) };
     // Never echo the URL: it usually contains the webhook's key.
     let parsed = net::parse_url(&url).map_err(|_| "VPSW_WEBHOOK_URL must be an http(s) URL".to_string())?;
+    // The URL and any token are secrets; plain HTTP would send them in the clear.
+    if !parsed.https && !parsed.is_loopback() {
+        return Err("VPSW_WEBHOOK_URL must use https (plain http is allowed only to this server itself)".into());
+    }
     let host = parsed.bare_host().to_ascii_lowercase();
     let format = match val("VPSW_WEBHOOK_FORMAT").map(|v| v.to_ascii_lowercase()).as_deref() {
         None | Some("auto") => {
@@ -427,5 +441,8 @@ mod tests {
         assert_eq!(fmt("https://example.com/hook"), WebhookFormat::Json);
         let err = load(&[("VPSW_WEBHOOK_URL", "ftp://secret-key@x")]).unwrap_err();
         assert!(!err.contains("secret-key"), "errors must not echo the URL");
+        assert!(load(&[("VPSW_WEBHOOK_URL", "http://hooks.example.com/k")]).is_err(), "no secrets over plain http");
+        let w = load(&[("VPSW_WEBHOOK_URL", "http://127.0.0.1:8099/key-123")]).unwrap().webhook.unwrap();
+        assert!(!format!("{w:?}").contains("key-123"), "Debug hides the path");
     }
 }

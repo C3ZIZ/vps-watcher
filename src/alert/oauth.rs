@@ -15,8 +15,10 @@ const TOKEN_TIMEOUT: Duration = Duration::from_secs(15);
 /// Hands out a cached access token, refreshing it shortly before it expires.
 pub struct TokenSource {
     cfg: OAuthConfig,
-    /// Where a rotated refresh token is kept; None for one-off CLI runs.
+    /// Where a rotated refresh token is kept.
     store: Option<PathBuf>,
+    /// False for one-off CLI runs: they read the saved token but never write files the service owns.
+    persist: bool,
     refresh: Mutex<String>,
     cache: tokio::sync::Mutex<Option<(String, Instant)>>,
 }
@@ -39,7 +41,7 @@ struct TokenReply {
 
 impl TokenSource {
     /// `store` is the data-dir file for rotated refresh tokens (Microsoft rotates them).
-    pub fn new(cfg: OAuthConfig, store: Option<PathBuf>) -> Self {
+    pub fn new(cfg: OAuthConfig, store: Option<PathBuf>, persist: bool) -> Self {
         let env_token = cfg.refresh_token.expose().to_string();
         // A saved token only counts while the env still holds the token it replaced.
         let saved = store
@@ -48,7 +50,7 @@ impl TokenSource {
             .and_then(|b| serde_json::from_slice::<Stored>(&b).ok())
             .filter(|s| s.replaces == fingerprint(&env_token))
             .map(|s| s.refresh_token);
-        TokenSource { cfg, store, refresh: Mutex::new(saved.unwrap_or(env_token)), cache: Default::default() }
+        TokenSource { cfg, store, persist, refresh: Mutex::new(saved.unwrap_or(env_token)), cache: Default::default() }
     }
 
     /// A valid access token, from cache when possible.
@@ -109,7 +111,7 @@ impl TokenSource {
         if let Ok(mut r) = self.refresh.lock() {
             *r = new.clone();
         }
-        let Some(path) = &self.store else { return };
+        let Some(path) = self.store.as_ref().filter(|_| self.persist) else { return };
         let stored = Stored { replaces: fingerprint(self.cfg.refresh_token.expose()), refresh_token: new };
         if let Ok(json) = serde_json::to_vec(&stored)
             && let Err(e) = atomic_write(path, &json, true)
@@ -166,7 +168,7 @@ mod tests {
             token_server(vec![r#"{"access_token":"at1","expires_in":3600,"refresh_token":"rt-new"}"#]).await;
         let d = tempfile::tempdir().unwrap();
         let store = d.path().join("smtp-oauth.json");
-        let ts = TokenSource::new(cfg(port), Some(store.clone()));
+        let ts = TokenSource::new(cfg(port), Some(store.clone()), true);
         assert_eq!(ts.access_token().await.unwrap(), "at1");
         assert_eq!(ts.access_token().await.unwrap(), "at1", "second call comes from cache");
         let reqs = server.await.unwrap();
@@ -175,11 +177,11 @@ mod tests {
 
         let saved = std::fs::read_to_string(&store).unwrap();
         assert!(saved.contains("rt-new") && !saved.contains("rt-env"), "env token is stored only as a hash");
-        let again = TokenSource::new(cfg(port), Some(store.clone()));
+        let again = TokenSource::new(cfg(port), Some(store.clone()), true);
         assert_eq!(*again.refresh.lock().unwrap(), "rt-new", "the rotated token is used after a restart");
         let mut changed = cfg(port);
         changed.refresh_token = Secret::new("rt-pasted-later");
-        assert_eq!(*TokenSource::new(changed, Some(store)).refresh.lock().unwrap(), "rt-pasted-later");
+        assert_eq!(*TokenSource::new(changed, Some(store), true).refresh.lock().unwrap(), "rt-pasted-later");
     }
 
     #[tokio::test]
@@ -187,7 +189,7 @@ mod tests {
         let (port, _s) =
             token_server(vec![r#"{"error":"invalid_grant","error_description":"Token has been expired or revoked."}"#])
                 .await;
-        let e = TokenSource::new(cfg(port), None).access_token().await.unwrap_err();
+        let e = TokenSource::new(cfg(port), None, true).access_token().await.unwrap_err();
         assert_eq!(e, "OAuth token refresh failed: Token has been expired or revoked.");
     }
 }

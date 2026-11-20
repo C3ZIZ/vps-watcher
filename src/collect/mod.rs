@@ -142,7 +142,21 @@ impl Snapshot {
                 m.detail.clear();
             }
         }
+        for a in &mut s.alerts {
+            if !self.alert_detail_is_public(&a.key) {
+                a.detail.clear();
+            }
+        }
         s
+    }
+
+    /// Monitor alert details are public only for monitors whose details are; log-file and deleted
+    /// monitors could reveal paths.
+    pub fn alert_detail_is_public(&self, key: &str) -> bool {
+        match key.strip_prefix("mon:") {
+            None => true,
+            Some(id) => self.monitors.iter().any(|m| m.id == id && m.kind != "logfile"),
+        }
     }
 }
 
@@ -222,6 +236,9 @@ pub struct App {
     pub pids: Option<u64>,
     pub restarts: Option<u64>,
     pub oom_killed: bool,
+    /// Out-of-memory kills inside the app since its cgroup was created.
+    #[serde(skip)]
+    pub oom_kills: Option<u64>,
     pub ports: Vec<PortMap>,
     pub system: bool,
     #[serde(skip)]
@@ -311,7 +328,7 @@ pub fn init(cfg: Config) -> Result<(Arc<Shared>, mpsc::Receiver<alert::Batch>), 
     let monitors = MonitorStore::load(&cfg.data_dir)?;
     let (tick, _) = watch::channel(0);
     let alerts = AlertEngine::load(cfg.alerts.clone(), &cfg.data_dir);
-    let notifier = Arc::new(Notifier::new(&cfg.alerts, Some(&cfg.data_dir), &hostname(), cfg.domain.as_deref()));
+    let notifier = Arc::new(Notifier::new(&cfg.alerts, Some(&cfg.data_dir), true, &hostname(), cfg.domain.as_deref()));
     let (alert_tx, alert_rx) = mpsc::channel(64);
     let sh = Arc::new(Shared {
         docker: Docker::new(&cfg.docker_socket),
@@ -507,7 +524,10 @@ impl Collector {
     async fn refresh_services(&mut self, sh: &Shared) {
         self.services_at = Some(Instant::now());
         self.services = self.cg.running_services();
-        self.failed = systemd::failed_units().await;
+        // A slow or missing systemctl keeps the previous list, so failed-unit alerts neither end nor repeat.
+        if let Some(failed) = systemd::failed_units().await {
+            self.failed = failed;
+        }
         self.mounts = host::read("/proc/self/mountinfo").map(|t| host::parse_mountinfo(&t)).unwrap_or_default();
         let files = logs::discover_files(std::path::Path::new("/var/log"));
         *sh.log_files.lock().unwrap_or_else(|e| e.into_inner()) = files;
@@ -677,6 +697,7 @@ impl Collector {
         // A recreated container has fresh counters; never diff across two different containers.
         let prev = self.prev.apps.get(&app.id).filter(|p| p.2 == app.container_id);
         app.mem = Some(st.mem);
+        app.oom_kills = st.oom_kills;
         app.mem_limit = st.mem_limit;
         app.pids = Some(st.pids);
         if let Some((p, pn, _)) = prev {
@@ -859,6 +880,25 @@ pub async fn run_reports(sh: Arc<Shared>) {
     }
 }
 
+/// Writes alert state off the runtime. Writes run one at a time and an older state never
+/// overwrites a newer one, even when a slow disk makes saves pile up.
+fn save_alert_state(path: PathBuf, bytes: Vec<u8>) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    static WRITTEN: Mutex<u64> = Mutex::new(0);
+    let seq = NEXT.fetch_add(1, Ordering::SeqCst);
+    tokio::task::spawn_blocking(move || {
+        let mut last = WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
+        if seq < *last {
+            return;
+        }
+        match crate::util::atomic_write(&path, &bytes, true) {
+            Ok(()) => *last = seq,
+            Err(e) => warn!("could not save alert state: {e}"),
+        }
+    });
+}
+
 /// Runs the alert rules on this sample, saves alert state when it changed and queues new events.
 fn check_alerts(sh: &Shared, snap: &mut Snapshot) {
     let events = {
@@ -866,11 +906,7 @@ fn check_alerts(sh: &Shared, snap: &mut Snapshot) {
         let events = engine.evaluate(snap);
         snap.alerts = engine.active();
         if let Some((path, bytes)) = engine.take_save() {
-            tokio::task::spawn_blocking(move || {
-                if let Err(e) = crate::util::atomic_write(&path, &bytes, true) {
-                    warn!("could not save alert state: {e}");
-                }
-            });
+            save_alert_state(path, bytes);
         }
         events
     };

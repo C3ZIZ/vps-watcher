@@ -47,16 +47,17 @@ vps-watcher is a free, open-source monitor for one VPS. You install one binary o
 ## Alerts
 
 - **Engine** (`src/alert/engine.rs`). After every sample, a pure state machine compares the snapshot with the rules. Each condition must hold for a while before it fires (`fire_after`) and stay normal before it clears (`clear_after`). Thresholds clear a few points lower than they fire (hysteresis), so values at the limit do not flap.
-- **Rules.** CPU, memory and load sustained for `VPSW_ALERT_AFTER` minutes. CPU and memory spikes after 1 minute. Disk space and inodes. Monitors after about two failed checks. Containers seen running that stop. Unhealthy containers, restarts and OOM kills (rate-limited notices), failed systemd units and an unreachable Docker.
-- **State** (`alerts.json`, 0600). Holds the firing alerts, the last 200 events and the containers seen running, so a restart never re-sends an alert. Conditions whose subject disappears (a deleted monitor, a removed container) end quietly.
+- **Rules.** CPU, memory and load sustained for `VPSW_ALERT_AFTER` minutes. CPU and memory spikes after 1 minute. Disk space and inodes. Monitors after about two failed checks. Containers seen running that stop. Unhealthy containers, restarts and OOM kills (rate-limited notices; OOM kills come from the `oom_kill` counter in each app's cgroup `memory.events`), failed systemd units and an unreachable Docker.
+- **State** (`alerts.json`, 0600). Holds the firing alerts, the last 200 events and the containers seen running, so a restart never re-sends an alert. Conditions whose subject disappears (a deleted monitor, a removed container) end quietly; container conditions are kept while Docker is unreachable. Saves run one at a time, and an older state never overwrites a newer one.
 - **Delivery** (`src/alert/mod.rs`). Events go through a bounded queue to one task. It batches events within 10 seconds and sends to every channel at once. It retries twice (after 10 s and 60 s) and sends at most 30 messages an hour. Each message carries a snapshot of the server's state and busiest apps.
 - **Email** (`smtp.rs`, `html.rs`). A small SMTP client with STARTTLS or implicit TLS (rustls with webpki roots, always verified) and AUTH PLAIN, LOGIN or XOAUTH2.
   - It refuses data that arrives before the TLS handshake (STARTTLS injection).
   - It never sends credentials unencrypted to another machine.
   - Messages are `multipart/alternative`: plain text plus inline-styled HTML tables. Both parts are base64, so no line can end `DATA` early. Headers are RFC 2047 encoded and stripped of CR/LF.
 - **OAuth2** (`oauth.rs`). Access tokens come from a refresh token, are cached until a minute before expiry, and refresh by themselves. A rotated refresh token is saved in `smtp-oauth.json` (0600), tied to a SHA-256 fingerprint of the env value it replaces.
-- **Webhooks** (`webhook.rs`). Slack, Discord, plain text (ntfy) or JSON, picked from the URL. Optional HMAC-SHA256 signature over `timestamp.body`. Errors name the host only, because the URL is a secret.
+- **Webhooks** (`webhook.rs`). Slack, Discord, plain text (ntfy) or JSON, picked from the URL. Optional HMAC-SHA256 signature over `timestamp.body`. The URL must be https (except loopback). Errors name the host only and scrub the path and token from echoed response text, because the URL is a secret. Slack text is escaped so names cannot trigger mentions.
 - **Reports.** The same report as the Reports page, rendered as HTML tables with capacity advice. It is emailed on demand (`POST /api/report/email`) or every day or week (`VPSW_REPORT`). The last send time is kept in `report-sent`.
+- **Env file.** Parsed with systemd's `EnvironmentFile=` rules (quotes, escapes, continuations), so the CLI tests exactly what the service runs with.
 - **Secrets.** Settings hold secrets in a `Secret` type whose `Debug` output is a placeholder. `vps-watcher config`, the Alerts page and all error messages show only that a secret is set.
 
 ## Security
