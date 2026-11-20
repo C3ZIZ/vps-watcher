@@ -33,6 +33,8 @@ const ICONS = {
   logs: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h5"/>',
   system: '<rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/>',
   monitors: '<path d="M22 12h-4l-3 8L9 4l-3 8H2"/>',
+  alerts: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>',
+  send: '<path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/>',
   reports: '<path d="M3 3v18h18"/><path d="M7 15v3M12 10v8M17 6v12"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
   menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
@@ -544,6 +546,9 @@ function updateChrome() {
   if (s) {
     $id('host-name').textContent = s.hostname || 'server';
     $id('own').textContent = `${fmt.bytes(s.own.rss)} RAM · ${fmt.pct(s.own.cpu_pct)} CPU`;
+    const n = (s.alerts || []).length;
+    const c = $id('alert-count');
+    if (c) { c.hidden = !n; c.textContent = String(n); c.classList.toggle('warn', n > 0 && s.alerts.every((a) => a.severity !== 'critical')); }
   }
 }
 setInterval(updateChrome, 1000);
@@ -556,6 +561,7 @@ const PAGES = [
   ['logs', 'Logs'],
   ['system', 'System'],
   ['monitors', 'Monitors'],
+  ['alerts', 'Alerts'],
   ['reports', 'Reports'],
   ['settings', 'Settings'],
 ];
@@ -604,7 +610,7 @@ function route() {
   fill(main, view);
   const render = {
     overview: pageOverview, apps: pageApps, app: () => pageApp(view, arg), logs: () => pageLogs(view, q),
-    system: () => pageSystem(view, q), monitors: pageMonitors, reports: pageReports, settings: pageSettings,
+    system: () => pageSystem(view, q), monitors: pageMonitors, alerts: pageAlerts, reports: pageReports, settings: pageSettings,
   }[page];
   if (!render || isAdminPage) return pageTitle(view, 'Not found', h('p', { class: 'muted', text: 'This page does not exist.' }));
   render(view, arg);
@@ -627,7 +633,8 @@ function renderShell(app) {
   const s = state.session;
   const nav = h('nav', { class: 'nav', 'aria-label': 'Main' },
     PAGES.filter(([k]) => k !== 'settings' || s.authenticated).map(([k, label]) =>
-      h('a', { href: '#/' + k, 'data-page': k }, icon(k), label)));
+      h('a', { href: '#/' + k, 'data-page': k }, icon(k), label,
+        k === 'alerts' ? h('span', { class: 'count', id: 'alert-count', hidden: true, 'aria-label': 'alerts firing' }) : null)));
   const themeBtn = h('button', { class: 'ghost', type: 'button', onclick: cycleTheme }, icon('moon'), h('span', { text: 'Theme' }));
   const authBtn = s.authenticated
     ? h('button', { class: 'ghost', type: 'button', onclick: logout }, icon('out'), h('span', { text: 'Sign out' }))
@@ -744,6 +751,7 @@ function pageOverview(view) {
   const rangeEl = rangePicker(state.range, (r) => { state.range = r; store.set('range', r); loadAll(); });
   pageTitle(view, 'Overview');
   const banner = h('div', { class: 'banner', hidden: true });
+  const strip = h('a', { class: 'alert-strip', href: '#/alerts', hidden: true });
   const kpis = h('div', { class: 'grid kpis' });
   const cpu = chartCard('CPU', { unit: '%', max: 100, series: [{ label: 'CPU', color: '--s1' }] });
   const mem = chartCard('Memory', { unit: '%', max: 100, series: [{ label: 'Memory', color: '--s1' }] });
@@ -751,7 +759,7 @@ function pageOverview(view) {
   const io = chartCard('Disk I/O', { unit: 'B/s', series: [{ label: 'Read', color: '--s1' }, { label: 'Write', color: '--s2' }] });
   const appsCard = h('section', { class: 'card' });
   const sideCard = h('div', { class: 'stack' });
-  view.append(banner, kpis,
+  view.append(banner, strip, kpis,
     h('div', { class: 'toolbar' }, h('h2', { text: 'History' }), rangeEl),
     h('div', { class: 'grid charts' }, cpu.card, mem.card, net.card, io.card),
     h('div', { class: 'grid two' }, appsCard, sideCard));
@@ -790,6 +798,12 @@ function pageOverview(view) {
     if (state.session.mode === 'open' && !state.session.authenticated) notes.push('Public view (open mode). Sign in as admin to manage monitors.');
     banner.hidden = !notes.length;
     banner.textContent = notes.join(' · ');
+    const firing = s.alerts || [];
+    strip.hidden = !firing.length;
+    strip.classList.toggle('warn', firing.every((a) => a.severity !== 'critical'));
+    fill(strip, icon('alerts'), h('b', { text: `${firing.length} alert${firing.length === 1 ? '' : 's'} firing` }),
+      h('span', { class: 'grow', text: firing.slice(0, 3).map((a) => a.title).join(' · ') + (firing.length > 3 ? ' …' : '') }),
+      h('span', { text: 'View →' }));
 
     const disk = [...s.disks].sort((a, b) => b.pct - a.pct)[0];
     const diskPct = disk ? disk.pct : 0;
@@ -1260,6 +1274,117 @@ function addMonitorForm() {
   return h('section', { class: 'card', style: { marginTop: '14px' } }, h('div', { class: 'card-head' }, h('h2', { text: 'Add a monitor' })), form);
 }
 
+/* ---------- Alerts ---------- */
+
+function sevBadge(sev) {
+  return h('span', { class: 'badge ' + (sev === 'critical' ? 'bad' : sev === 'warning' ? 'warn' : ''), text: sev });
+}
+
+function stateTag(st) {
+  return h('span', { class: 'badge ' + (st === 'firing' ? 'bad' : st === 'resolved' ? 'good' : 'warn'), text: st === 'firing' ? 'alert' : st });
+}
+
+async function pageAlerts(view) {
+  pageTitle(view, 'Alerts');
+  const admin = state.session.authenticated;
+  const activeCard = h('section', { class: 'card' });
+  const histCard = h('section', { class: 'card' });
+  const side = h('div', { class: 'stack' });
+  view.append(h('p', { class: 'muted', text: 'vps-watcher checks every sample against the rules below. Problems must last a little while before they alert, so short blips stay quiet.' }),
+    h('div', { class: 'grid two' }, h('div', { class: 'stack' }, activeCard, histCard), side));
+
+  const hist = sortableTable([
+    { key: 'ts', label: 'When', num: true, get: (e) => e.ts, render: (e) => h('span', { title: fmt.stamp(e.ts), text: fmt.time(e.ts, true) }) },
+    { key: 'state', label: 'Event', get: (e) => e.state, render: (e) => stateTag(e.state) },
+    { key: 'title', label: 'What', get: (e) => e.title, render: (e) => h('div', { class: 'name-cell wrap' }, h('b', { text: e.title }), e.detail ? h('span', { text: e.detail }) : null) },
+  ], { id: 'ahist', defaultSort: 'ts:desc', empty: 'No alerts yet. That is good news.' });
+  fill(histCard, h('div', { class: 'card-head' }, h('h2', { text: 'History' }), h('span', { class: 'muted small', text: 'last 200 events' })), hist.el);
+
+  function paintActive(list) {
+    fill(activeCard, h('div', { class: 'card-head' }, h('h2', { text: 'Firing now' })),
+      list.length
+        ? h('div', { class: 'stack' }, list.map((a) => h('div', { class: 'alert-row' }, sevBadge(a.severity),
+          h('div', { class: 'grow' }, h('b', { text: a.title }), a.detail ? h('div', { class: 'muted small', text: a.detail }) : null),
+          h('span', { class: 'muted small nowrap', title: fmt.stamp(a.since), text: 'for ' + fmt.dur(Math.max(0, Math.round(Date.now() / 1000 - a.since))) }))))
+        : h('p', { class: 'row' }, h('span', { class: 'badge good', text: 'all clear' }), h('span', { class: 'muted', text: 'Nothing is firing.' })));
+  }
+
+  function rulesCard(r) {
+    const pct = (v) => (v === null || v === undefined ? 'off' : `${v}% or more`);
+    const rows = [
+      ['CPU', r.cpu == null ? 'off' : `${pct(r.cpu)} for ${r.after_mins} min`],
+      ['Memory', r.memory == null ? 'off' : `${pct(r.memory)} for ${r.after_mins} min`],
+      ['Spikes', r.spike == null ? 'off' : `CPU or memory at ${r.spike}% for 1 min (critical)`],
+      ['Load', r.load_per_core == null ? 'off' : `above ${r.load_per_core} per core for ${r.after_mins} min`],
+      ['Disk space and inodes', r.disk == null ? 'off' : `${pct(r.disk)} used`],
+      ['Monitors', 'down for 2 checks in a row'],
+      ['Apps', r.apps ? 'stopped, unhealthy, restarted, out of memory, failed services, Docker unreachable' : 'off'],
+      ['Emailed report', r.report_days == null ? 'off' : r.report_days === 1 ? 'daily' : 'weekly'],
+    ];
+    return h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { text: 'Rules' })),
+      h('dl', { class: 'kv' }, rows.flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })])),
+      h('p', { class: 'muted small', text: 'Change these with VPSW_ALERT_* in /etc/vps-watcher/vps-watcher.env, then restart the service.' }));
+  }
+
+  function channelStatus(st) {
+    if (st.last_error_at && (!st.last_ok || st.last_error_at > st.last_ok)) {
+      return h('p', { class: 'error small', text: `Last attempt failed ${fmt.ago(st.last_error_at)}: ${st.last_error}` });
+    }
+    if (st.last_ok) return h('p', { class: 'small', style: { color: 'var(--good)' }, text: `Last delivered ${fmt.ago(st.last_ok)} · ${st.sent} sent` });
+    return h('p', { class: 'muted small', text: 'Nothing sent yet.' });
+  }
+
+  let lastResults = null;
+  const resultLines = (list) => list.map((x) => h('p', { class: x.ok ? 'small' : 'error small', style: x.ok ? { color: 'var(--good)' } : null,
+    text: `${x.channel === 'email' ? 'Email' : 'Webhook'}: ${x.ok ? 'sent. Check that it arrived.' : x.error}` }));
+  function channelsCard(ch) {
+    const results = h('div', { class: 'stack test-results', role: 'status' }, lastResults ? resultLines(lastResults) : null);
+    const btn = h('button', { type: 'button', class: 'primary' }, icon('send'), 'Send test alert');
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      fill(results, h('p', { class: 'muted small', text: 'Sending…' }));
+      try {
+        const r = await api.post('/api/alerts/test');
+        lastResults = r.results;
+        load(); // redraws the card with fresh delivery status and these results
+      } catch (e) { btn.disabled = false; fill(results, h('p', { class: 'error small', text: e.message })); }
+    });
+    const email = ch.email
+      ? [h('dl', { class: 'kv' },
+        ...[['To', ch.email.to.join(', ')], ['From', ch.email.from], ['Server', `${ch.email.host}:${ch.email.port} · ${ch.email.security}`],
+          ['Sign-in', { password: 'password', oauth2: 'OAuth2', none: 'none (relay)' }[ch.email.auth]]]
+          .flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })])), channelStatus(ch.email.status)]
+      : [h('p', { class: 'muted small', text: 'Off. Set VPSW_SMTP_HOST, VPSW_SMTP_USER, VPSW_SMTP_PASSWORD and VPSW_ALERT_EMAIL.' })];
+    const hook = ch.webhook
+      ? [h('dl', { class: 'kv' },
+        ...[['Host', ch.webhook.host], ['Format', ch.webhook.format], ['Signed', ch.webhook.signed ? 'yes (HMAC-SHA256)' : 'no']]
+          .flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })])), channelStatus(ch.webhook.status)]
+      : [h('p', { class: 'muted small', text: 'Off. Set VPSW_WEBHOOK_URL (Slack, Discord, ntfy or your own endpoint).' })];
+    return h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { text: 'Where alerts go' })),
+      h('h3', { text: 'Email' }), ...email, h('h3', { text: 'Webhook' }), ...hook,
+      h('div', { class: 'row', style: { marginTop: '12px' } }, btn), results);
+  }
+
+  let rendered = false;
+  async function load() {
+    try {
+      const d = await api.get('/api/alerts');
+      paintActive(d.active);
+      hist.set(d.history);
+      if (!rendered) {
+        rendered = true;
+        fill(side, admin && d.channels ? channelsCard(d.channels) : null, rulesCard(d.rules));
+      } else if (admin && d.channels) {
+        side.firstChild.replaceWith(channelsCard(d.channels));
+      }
+    } catch (e) { fill(activeCard, h('p', { class: 'error', text: e.message })); }
+  }
+  state.onSnap = (s) => s && s.alerts && paintActive(s.alerts);
+  await load();
+  const iv = setInterval(() => { if (!document.hidden) api.get('/api/alerts').then((d) => hist.set(d.history)).catch(() => {}); }, 30000);
+  state.cleanup.push(() => clearInterval(iv));
+}
+
 /* ---------- Reports ---------- */
 
 function pageReports(view) {
@@ -1267,9 +1392,18 @@ function pageReports(view) {
   const pick = rangePicker(range, (r) => { range = r; store.set('report.range', r); load(); });
   const csv = h('a', { class: 'btn', download: '' }, icon('download'), 'CSV');
   const print = h('button', { type: 'button', onclick: () => window.print() }, icon('printer'), 'Print / PDF');
+  const mail = state.session.authenticated ? h('button', { type: 'button' }, icon('send'), 'Email report') : null;
+  if (mail) {
+    mail.addEventListener('click', async () => {
+      mail.disabled = true;
+      try { await api.post('/api/report/email', { range }); toast('Report emailed to the alert recipients.'); }
+      catch (e) { toast(e.message); }
+      mail.disabled = false;
+    });
+  }
   pageTitle(view, 'Reports');
   const out = h('div', { class: 'stack' });
-  view.append(h('div', { class: 'toolbar' }, pick, h('span', { class: 'spacer' }), csv, print), out);
+  view.append(h('div', { class: 'toolbar' }, pick, h('span', { class: 'spacer' }), mail, csv, print), out);
 
   async function load() {
     csv.href = `/api/report.csv?range=${range}`;

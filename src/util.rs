@@ -68,9 +68,71 @@ pub fn atomic_write(path: &Path, data: &[u8], private: bool) -> std::io::Result<
     std::fs::rename(&tmp, path)
 }
 
+/// Standard base64 with padding (RFC 4648).
+pub fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for c in data.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            out.push(if i <= c.len() { T[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
+}
+
+/// Calendar date and time in UTC: (year, month, day, hour, minute, second, weekday 0=Sunday).
+fn civil(ts: u64) -> (i64, u32, u32, u32, u32, u32, u32) {
+    let days = (ts / 86_400) as i64;
+    let secs = ts % 86_400;
+    // Howard Hinnant's days-to-civil algorithm.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    let wd = (days + 4).rem_euclid(7) as u32;
+    (y, m, d, (secs / 3600) as u32, (secs / 60 % 60) as u32, (secs % 60) as u32, wd)
+}
+
+/// `2026-11-21 14:03 UTC`, for alert messages.
+pub fn utc_stamp(ts: u64) -> String {
+    let (y, mo, d, h, mi, _, _) = civil(ts);
+    format!("{y}-{mo:02}-{d:02} {h:02}:{mi:02} UTC")
+}
+
+/// RFC 2822 date for email headers, such as `Sat, 21 Nov 2026 14:03:09 +0000`.
+pub fn rfc2822(ts: u64) -> String {
+    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let (y, mo, d, h, mi, s, wd) = civil(ts);
+    format!("{}, {d:02} {} {y} {h:02}:{mi:02}:{s:02} +0000", DAYS[wd as usize], MONTHS[mo as usize - 1])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base64_matches_rfc4648_vectors() {
+        let cases =
+            [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg=="), ("foobar", "Zm9vYmFy")];
+        for (i, o) in cases {
+            assert_eq!(base64(i.as_bytes()), o);
+        }
+        assert_eq!(base64(&[0xff, 0xfe]), "//4=");
+    }
+
+    #[test]
+    fn dates() {
+        assert_eq!(rfc2822(0), "Thu, 01 Jan 1970 00:00:00 +0000");
+        assert_eq!(rfc2822(1_795_269_789), "Sat, 21 Nov 2026 14:03:09 +0000");
+        assert_eq!(utc_stamp(951_782_400), "2000-02-29 00:00 UTC", "leap day");
+    }
 
     #[test]
     fn random_hex_is_unique_and_sized() {

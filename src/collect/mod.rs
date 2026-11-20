@@ -15,8 +15,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
+use crate::alert::{self, Engine as AlertEngine, Notifier};
 use crate::config::{AuthMode, Config};
 use crate::store::{self, History};
 use crate::util::now;
@@ -45,6 +46,10 @@ pub struct Shared {
     pub tick: watch::Sender<u64>,
     /// The latest snapshot as JSON for live views: (admin, public). Built once per sample, only when watched.
     pub live: RwLock<(Arc<str>, Arc<str>)>,
+    pub alerts: Mutex<AlertEngine>,
+    pub notifier: Arc<Notifier>,
+    /// Events for the delivery task; full means delivery is stuck, so new events are dropped.
+    pub alert_tx: mpsc::Sender<alert::Batch>,
 }
 
 impl Shared {
@@ -56,6 +61,11 @@ impl Shared {
     /// Locks history, recovering from a poisoned lock (a panic elsewhere must not stop monitoring).
     pub fn history(&self) -> std::sync::MutexGuard<'_, History> {
         self.history.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Locks the alert engine.
+    pub fn alerts(&self) -> std::sync::MutexGuard<'_, AlertEngine> {
+        self.alerts.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Locks the monitor store.
@@ -118,6 +128,8 @@ pub struct Snapshot {
     pub cgroup_v2: bool,
     /// vps-watcher's own footprint, so users can see it stays small.
     pub own: OwnUsage,
+    /// Alerts firing right now.
+    pub alerts: Vec<alert::Active>,
 }
 
 impl Snapshot {
@@ -130,7 +142,21 @@ impl Snapshot {
                 m.detail.clear();
             }
         }
+        for a in &mut s.alerts {
+            if !self.alert_detail_is_public(&a.key) {
+                a.detail.clear();
+            }
+        }
         s
+    }
+
+    /// Monitor alert details are public only for monitors whose details are; log-file and deleted
+    /// monitors could reveal paths.
+    pub fn alert_detail_is_public(&self, key: &str) -> bool {
+        match key.strip_prefix("mon:") {
+            None => true,
+            Some(id) => self.monitors.iter().any(|m| m.id == id && m.kind != "logfile"),
+        }
     }
 }
 
@@ -210,6 +236,9 @@ pub struct App {
     pub pids: Option<u64>,
     pub restarts: Option<u64>,
     pub oom_killed: bool,
+    /// Out-of-memory kills inside the app since its cgroup was created.
+    #[serde(skip)]
+    pub oom_kills: Option<u64>,
     pub ports: Vec<PortMap>,
     pub system: bool,
     #[serde(skip)]
@@ -284,8 +313,8 @@ struct Collector {
     static_info: (String, String, String),
 }
 
-/// Loads saved state and builds the shared handle.
-pub fn init(cfg: Config) -> Result<Arc<Shared>, String> {
+/// Loads saved state and builds the shared handle, plus the queue the alert sender reads.
+pub fn init(cfg: Config) -> Result<(Arc<Shared>, mpsc::Receiver<alert::Batch>), String> {
     std::fs::create_dir_all(&cfg.data_dir)
         .map_err(|e| format!("cannot create data dir {}: {e}", cfg.data_dir.display()))?;
     let history = match store::load(&cfg.data_dir.join("history.bin")) {
@@ -298,7 +327,10 @@ pub fn init(cfg: Config) -> Result<Arc<Shared>, String> {
     info!("loaded {} history series", history.len());
     let monitors = MonitorStore::load(&cfg.data_dir)?;
     let (tick, _) = watch::channel(0);
-    Ok(Arc::new(Shared {
+    let alerts = AlertEngine::load(cfg.alerts.clone(), &cfg.data_dir);
+    let notifier = Arc::new(Notifier::new(&cfg.alerts, Some(&cfg.data_dir), true, &hostname(), cfg.domain.as_deref()));
+    let (alert_tx, alert_rx) = mpsc::channel(64);
+    let sh = Arc::new(Shared {
         docker: Docker::new(&cfg.docker_socket),
         cfg,
         snapshot: RwLock::default(),
@@ -308,7 +340,16 @@ pub fn init(cfg: Config) -> Result<Arc<Shared>, String> {
         log_files: Mutex::default(),
         tick,
         live: RwLock::new((Arc::from(""), Arc::from(""))),
-    }))
+        alerts: Mutex::new(alerts),
+        notifier,
+        alert_tx,
+    });
+    Ok((sh, alert_rx))
+}
+
+/// This machine's host name.
+pub fn hostname() -> String {
+    host::read("/proc/sys/kernel/hostname").unwrap_or_default().trim().to_string()
 }
 
 /// Samples forever at the configured interval.
@@ -375,7 +416,7 @@ pub async fn run_checks(shared: Arc<Shared>) {
 
 /// Reads hostname, OS name and kernel version once.
 fn static_info() -> (String, String, String) {
-    let hostname = host::read("/proc/sys/kernel/hostname").unwrap_or_default().trim().to_string();
+    let hostname = hostname();
     let kernel = host::read("/proc/sys/kernel/osrelease").unwrap_or_default().trim().to_string();
     let os = host::read("/etc/os-release")
         .and_then(|t| t.lines().find_map(|l| l.strip_prefix("PRETTY_NAME=").map(|v| v.trim_matches('"').to_string())))
@@ -421,6 +462,7 @@ impl Collector {
         self.sample_monitors(sh, &mut snap, secs);
         snap.own = self.own_usage(secs);
         self.record(sh, &snap);
+        check_alerts(sh, &mut snap);
 
         let snap = Arc::new(snap);
         if sh.tick.receiver_count() > 0 {
@@ -482,7 +524,10 @@ impl Collector {
     async fn refresh_services(&mut self, sh: &Shared) {
         self.services_at = Some(Instant::now());
         self.services = self.cg.running_services();
-        self.failed = systemd::failed_units().await;
+        // A slow or missing systemctl keeps the previous list, so failed-unit alerts neither end nor repeat.
+        if let Some(failed) = systemd::failed_units().await {
+            self.failed = failed;
+        }
         self.mounts = host::read("/proc/self/mountinfo").map(|t| host::parse_mountinfo(&t)).unwrap_or_default();
         let files = logs::discover_files(std::path::Path::new("/var/log"));
         *sh.log_files.lock().unwrap_or_else(|e| e.into_inner()) = files;
@@ -652,6 +697,7 @@ impl Collector {
         // A recreated container has fresh counters; never diff across two different containers.
         let prev = self.prev.apps.get(&app.id).filter(|p| p.2 == app.container_id);
         app.mem = Some(st.mem);
+        app.oom_kills = st.oom_kills;
         app.mem_limit = st.mem_limit;
         app.pids = Some(st.pids);
         if let Some((p, pn, _)) = prev {
@@ -789,6 +835,89 @@ impl Collector {
                 h.record(&format!("mon:{}.mem", m.id), ts, mem as f64);
             }
         }
+    }
+}
+
+/// Emails a usage report every VPSW_REPORT period; the last send time survives restarts.
+pub async fn run_reports(sh: Arc<Shared>) {
+    let Some(days) = sh.cfg.alerts.report_days else { return };
+    if sh.cfg.alerts.email.is_none() {
+        warn!("VPSW_REPORT is set, but email is not configured; no reports will be sent");
+        return;
+    }
+    let path = sh.cfg.data_dir.join("report-sent");
+    let period = days * 86_400;
+    // The first report goes out one full period after setup, not at every restart.
+    let mut last = match std::fs::read_to_string(&path).ok().and_then(|s| s.trim().parse::<u64>().ok()) {
+        Some(t) => t,
+        None => {
+            let _ = crate::util::atomic_write(&path, now().to_string().as_bytes(), true);
+            now()
+        }
+    };
+    let (range, label) = if days == 1 { (store::Range::H24, "24h") } else { (store::Range::D7, "7d") };
+    let mut ticker = tokio::time::interval(Duration::from_secs(600));
+    loop {
+        ticker.tick().await;
+        let t = now();
+        if t.saturating_sub(last) < period {
+            continue;
+        }
+        let r = crate::report::build(&sh.history(), &sh.snapshot(), range, label, t);
+        match sh.notifier.send_report(&r).await {
+            Ok(()) => {
+                info!("emailed the {label} report");
+                last = t;
+            }
+            Err(e) => {
+                warn!("could not email the {label} report: {e}; retrying in an hour");
+                last = t.saturating_sub(period) + 3600;
+            }
+        }
+        if let Err(e) = crate::util::atomic_write(&path, last.to_string().as_bytes(), true) {
+            warn!("could not save report time: {e}");
+        }
+    }
+}
+
+/// Writes alert state off the runtime. Writes run one at a time and an older state never
+/// overwrites a newer one, even when a slow disk makes saves pile up.
+fn save_alert_state(path: PathBuf, bytes: Vec<u8>) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    static WRITTEN: Mutex<u64> = Mutex::new(0);
+    let seq = NEXT.fetch_add(1, Ordering::SeqCst);
+    tokio::task::spawn_blocking(move || {
+        let mut last = WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
+        if seq < *last {
+            return;
+        }
+        match crate::util::atomic_write(&path, &bytes, true) {
+            Ok(()) => *last = seq,
+            Err(e) => warn!("could not save alert state: {e}"),
+        }
+    });
+}
+
+/// Runs the alert rules on this sample, saves alert state when it changed and queues new events.
+fn check_alerts(sh: &Shared, snap: &mut Snapshot) {
+    let events = {
+        let mut engine = sh.alerts();
+        let events = engine.evaluate(snap);
+        snap.alerts = engine.active();
+        if let Some((path, bytes)) = engine.take_save() {
+            save_alert_state(path, bytes);
+        }
+        events
+    };
+    for e in &events {
+        info!("alert {}: {} ({})", e.state.label(), e.title, e.detail);
+    }
+    if !events.is_empty()
+        && sh.notifier.has_channel()
+        && sh.alert_tx.try_send(alert::Batch { events, ctx: alert::Context::from_snapshot(snap) }).is_err()
+    {
+        warn!("alert delivery is backed up; dropped new events");
     }
 }
 

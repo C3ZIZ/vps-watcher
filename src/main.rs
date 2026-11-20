@@ -1,11 +1,14 @@
 //! vps-watcher: a tiny, fast, secure monitor for a single VPS.
 
+mod alert;
 mod auth;
 mod collect;
 mod config;
 mod log;
+mod net;
 mod proxy;
 mod report;
+mod setcmd;
 mod store;
 mod util;
 mod web;
@@ -26,6 +29,9 @@ USAGE:
   vps-watcher [serve]              Run the monitor and web UI
   vps-watcher proxy caddy|nginx    Print a reverse proxy config for VPSW_DOMAIN
   vps-watcher reset-admin          Delete the admin so the setup page appears again
+  vps-watcher config               Check settings and print them with secrets hidden
+  vps-watcher set KEY [VALUE]      Change one setting; secrets are asked for at a hidden prompt
+  vps-watcher test-alert           Send a test alert to the email and webhook in the settings
   vps-watcher version              Print the version
 
 OPTIONS:
@@ -72,6 +78,24 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        ["config"] => {
+            let cfg = load()?;
+            let file = env_file.as_deref().map_or(config::DEFAULT_ENV_FILE.into(), |p| p.display().to_string());
+            println!("Settings are valid. Values come from the environment and {file}; secrets are hidden.\n");
+            for (k, v) in cfg.summary() {
+                println!("  {k:<14} {v}");
+            }
+            Ok(())
+        }
+        ["test-alert"] => test_alert(load()?),
+        ["set", key, rest @ ..] if rest.len() <= 1 => {
+            let file = env_file.clone().unwrap_or_else(|| config::DEFAULT_ENV_FILE.into());
+            for line in setcmd::run(&file, key, rest.first().copied())? {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        ["set", ..] => Err("use: vps-watcher set KEY [VALUE] (quote a value that contains spaces)".into()),
         ["version" | "--version" | "-V"] => {
             println!("vps-watcher {VERSION}");
             Ok(())
@@ -82,6 +106,26 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         _ => Err(format!("unknown command '{}'; run 'vps-watcher help'", rest.join(" "))),
     }
+}
+
+/// Sends one test notification from the command line and reports each channel.
+fn test_alert(cfg: config::Config) -> Result<(), String> {
+    let host = collect::hostname();
+    // Reads the service's rotated OAuth token, but a root-run CLI must not write files the service cannot read.
+    let n = alert::Notifier::new(&cfg.alerts, Some(&cfg.data_dir), false, &host, cfg.domain.as_deref());
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+    let results = rt.block_on(n.test(&alert::Context::default()))?;
+    let mut failed = false;
+    for (channel, r) in results {
+        match r {
+            Ok(()) => println!("{channel}: sent"),
+            Err(e) => {
+                failed = true;
+                println!("{channel}: failed: {e}");
+            }
+        }
+    }
+    if failed { Err("some alerts were not delivered".into()) } else { Ok(()) }
 }
 
 /// Pulls `--env-file <path>` out of the arguments.
