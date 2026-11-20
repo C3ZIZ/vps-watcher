@@ -8,6 +8,7 @@ mod log;
 mod net;
 mod proxy;
 mod report;
+mod setcmd;
 mod store;
 mod util;
 mod web;
@@ -29,6 +30,7 @@ USAGE:
   vps-watcher proxy caddy|nginx    Print a reverse proxy config for VPSW_DOMAIN
   vps-watcher reset-admin          Delete the admin so the setup page appears again
   vps-watcher config               Check settings and print them with secrets hidden
+  vps-watcher set KEY [VALUE]      Change one setting; secrets are asked for at a hidden prompt
   vps-watcher test-alert           Send a test alert to the email and webhook in the settings
   vps-watcher version              Print the version
 
@@ -86,6 +88,14 @@ fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         ["test-alert"] => test_alert(load()?),
+        ["set", key, rest @ ..] if rest.len() <= 1 => {
+            let file = env_file.clone().unwrap_or_else(|| config::DEFAULT_ENV_FILE.into());
+            for line in setcmd::run(&file, key, rest.first().copied())? {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        ["set", ..] => Err("use: vps-watcher set KEY [VALUE] (quote a value that contains spaces)".into()),
         ["version" | "--version" | "-V"] => {
             println!("vps-watcher {VERSION}");
             Ok(())
