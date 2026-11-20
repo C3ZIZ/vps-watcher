@@ -116,6 +116,8 @@ if [ ! -f "$CONF" ]; then
 else
   say "Kept your settings in $CONF"
 fi
+# A fresh copy of the template shows settings added since your file was written (it holds no secrets).
+install -m 0640 -o root -g "$USER_NAME" "$TMP/vps-watcher.env" "$CONF_DIR/vps-watcher.env.example"
 
 systemctl daemon-reload
 if [ "$UPGRADE" = yes ]; then
@@ -142,6 +144,10 @@ cat <<EOF
   Go public on your domain:
      set VPSW_DOMAIN in $CONF, then run
      sudo vps-watcher proxy caddy     (or: sudo vps-watcher proxy nginx)
+
+  Alerts by email or webhook: fill in the alert settings in $CONF
+     (new settings from upgrades are listed in $CONF_DIR/vps-watcher.env.example), then
+     sudo vps-watcher config && sudo systemctl restart vps-watcher && sudo vps-watcher test-alert
 
   Logs: journalctl -u vps-watcher -f      Settings: $CONF
 EOF
