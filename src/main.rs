@@ -101,8 +101,8 @@ fn run(args: &[String]) -> Result<(), String> {
 /// Sends one test notification from the command line and reports each channel.
 fn test_alert(cfg: config::Config) -> Result<(), String> {
     let host = collect::hostname();
-    // No data dir: a root-run CLI must not create files the service user cannot read.
-    let n = alert::Notifier::new(&cfg.alerts, None, &host, cfg.domain.as_deref());
+    // Reads the service's rotated OAuth token, but a root-run CLI must not write files the service cannot read.
+    let n = alert::Notifier::new(&cfg.alerts, Some(&cfg.data_dir), false, &host, cfg.domain.as_deref());
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
     let results = rt.block_on(n.test(&alert::Context::default()))?;
     let mut failed = false;

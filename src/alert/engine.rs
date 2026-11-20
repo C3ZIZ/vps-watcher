@@ -92,7 +92,8 @@ pub struct Engine {
     history: VecDeque<Event>,
     /// Containers seen running: only these alert when they stop.
     running: HashSet<String>,
-    restarts: HashMap<String, (u64, bool)>,
+    restarts: HashMap<String, u64>,
+    ooms: HashMap<String, u64>,
     last_notice: HashMap<String, u64>,
     dirty: bool,
 }
@@ -110,6 +111,7 @@ impl Engine {
             history: saved.history.into_iter().rev().take(HISTORY).rev().collect(),
             running: saved.running.into_iter().collect(),
             restarts: HashMap::new(),
+            ooms: HashMap::new(),
             last_notice: HashMap::new(),
             dirty: false,
         }
@@ -181,6 +183,10 @@ impl Engine {
                 events.push(Event { key: c.key, state: State::Resolved, severity: c.severity, title, detail, ts });
             }
         }
+        // While Docker is unreachable the container list is empty; that says nothing about the containers.
+        if s.docker.error.is_some() {
+            present.extend(self.active.keys().chain(self.pending.keys()).filter(|k| k.starts_with("app:c:")).cloned());
+        }
         // Deleted monitors, removed containers and unmounted disks end quietly.
         let before = self.active.len();
         self.active.retain(|k, _| present.contains(k));
@@ -239,7 +245,7 @@ impl Engine {
                 severity: Severity::Warning,
                 fire: (
                     format!("Memory is at {m:.0}%"),
-                    with_top(format!("{} free of {}", gib(s.mem.available), gib(s.mem.total)), &top_mem),
+                    with_top(format!("{} free of {}", size(s.mem.available), size(s.mem.total)), &top_mem),
                 ),
                 clear: ("Memory is back to normal".into(), format!("{m:.0}% now")),
             });
@@ -270,7 +276,7 @@ impl Engine {
                     severity: Severity::Critical,
                     fire: (
                         format!("Memory nearly exhausted: {m:.0}%"),
-                        with_top(format!("{} free{swap}; apps may be killed soon", gib(s.mem.available)), &top_mem),
+                        with_top(format!("{} free{swap}; apps may be killed soon", size(s.mem.available)), &top_mem),
                     ),
                     clear: ("Memory pressure is over".into(), format!("{m:.0}% now")),
                 });
@@ -306,7 +312,7 @@ impl Engine {
                 } else {
                     (
                         format!("Disk {} is {:.0}% full", d.mount, d.pct),
-                        format!("{} free of {}", gib(d.avail), gib(d.total)),
+                        format!("{} free of {}", size(d.avail), size(d.total)),
                     )
                 };
                 v.push(Check {
@@ -357,7 +363,7 @@ impl Engine {
                         fire_after: 60,
                         clear_after: 0,
                         severity: Severity::Critical,
-                        fire: (format!("{} stopped", a.name), a.status.clone()),
+                        fire: (format!("{} stopped", a.name), exit_hint(&a.status)),
                         clear: (format!("{} is running again", a.name), a.status.clone()),
                     });
                 }
@@ -394,34 +400,43 @@ impl Engine {
         }
         let mut out = Vec::new();
         let mut seen = HashSet::new();
-        for a in s.apps.iter().filter(|a| a.kind == "container") {
+        for a in &s.apps {
             seen.insert(a.id.clone());
-            // Restart counts are only known while the container runs; keep the last one otherwise.
-            let Some(n) = a.restarts else { continue };
-            let prev = self.restarts.insert(a.id.clone(), (n, a.oom_killed));
-            let Some((pn, poom)) = prev else { continue };
-            let (key, title, detail) = if a.oom_killed && !poom {
-                (
-                    format!("app:{}:oom", a.id),
-                    format!("{} ran out of memory", a.name),
-                    "The kernel killed it (OOM); check its memory limit".to_string(),
-                )
-            } else if n > pn {
-                (
+            let mut found = Vec::new();
+            // Counters are known only while the app runs; first sight is the baseline, and a
+            // smaller value means a new container or cgroup.
+            if let Some(n) = a.restarts
+                && self.restarts.insert(a.id.clone(), n).is_some_and(|p| n > p)
+            {
+                found.push((
                     format!("app:{}:restart", a.id),
                     format!("{} restarted", a.name),
                     format!("{n} restarts so far · {}", a.status),
-                )
-            } else {
-                continue;
-            };
-            if self.last_notice.get(&key).is_some_and(|t| s.ts.saturating_sub(*t) < NOTICE_GAP) {
-                continue;
+                ));
             }
-            self.last_notice.insert(key.clone(), s.ts);
-            out.push(Event { key, state: State::Notice, severity: Severity::Warning, title, detail, ts: s.ts });
+            if let Some(k) = a.oom_kills
+                && let Some(p) = self.ooms.insert(a.id.clone(), k)
+                && k > p
+            {
+                let limit = a.mem_limit.map_or(String::new(), |l| format!(" (limit {})", size(l)));
+                found.push((
+                    format!("app:{}:oom", a.id),
+                    format!("{} ran out of memory", a.name),
+                    format!("The kernel killed {} of its processes for using too much memory{limit}", k - p),
+                ));
+            }
+            for (key, title, detail) in found {
+                if self.last_notice.get(&key).is_some_and(|t| s.ts.saturating_sub(*t) < NOTICE_GAP) {
+                    continue;
+                }
+                self.last_notice.insert(key.clone(), s.ts);
+                out.push(Event { key, state: State::Notice, severity: Severity::Warning, title, detail, ts: s.ts });
+            }
         }
-        self.restarts.retain(|k, _| seen.contains(k));
+        if s.docker.error.is_none() {
+            self.restarts.retain(|k, _| seen.contains(k));
+            self.ooms.retain(|k, _| seen.contains(k));
+        }
         self.last_notice.retain(|_, t| s.ts.saturating_sub(*t) < NOTICE_GAP);
         out
     }
@@ -442,6 +457,17 @@ impl Engine {
     }
 }
 
+/// Docker's status, plus what the common kill exit codes mean.
+fn exit_hint(status: &str) -> String {
+    if status.contains("(137)") {
+        format!("{status} · code 137 means it was killed, often for running out of memory")
+    } else if status.contains("(139)") {
+        format!("{status} · code 139 means it crashed (segmentation fault)")
+    } else {
+        status.to_string()
+    }
+}
+
 /// The three running apps using the most CPU (or memory), such as `web 45%, db 20%`.
 fn top_apps(s: &Snapshot, cpu: bool) -> String {
     let mut apps: Vec<&crate::collect::App> = s.apps.iter().filter(|a| a.state == "running").collect();
@@ -459,7 +485,7 @@ fn top_apps(s: &Snapshot, cpu: bool) -> String {
             if cpu {
                 format!("{} {:.0}%", a.name, a.cpu_pct.unwrap_or(0.0))
             } else {
-                format!("{} {}", a.name, gib(a.mem.unwrap_or(0)))
+                format!("{} {}", a.name, size(a.mem.unwrap_or(0)))
             }
         })
         .collect();
@@ -470,9 +496,9 @@ fn with_top(detail: String, top: &str) -> String {
     if top.is_empty() { detail } else { format!("{detail} · top: {top}") }
 }
 
-/// Bytes as GB with one decimal, for alert text.
-fn gib(b: u64) -> String {
-    format!("{:.1} GB", b as f64 / 1e9)
+/// Bytes with binary units, matching the dashboard.
+fn size(b: u64) -> String {
+    super::html::bytes(b as f64)
 }
 
 #[cfg(test)]
@@ -540,7 +566,7 @@ mod tests {
         let ev = e.evaluate(&s);
         assert_eq!(ev.len(), 1, "only the spike, the 5-minute rule is still pending");
         assert_eq!((ev[0].title.as_str(), ev[0].severity), ("Memory nearly exhausted: 99%", Severity::Critical));
-        assert!(ev[0].detail.ends_with("top: web 2.0 GB"), "{}", ev[0].detail);
+        assert!(ev[0].detail.ends_with("top: web 1.9 GB"), "{}", ev[0].detail);
     }
 
     #[test]
@@ -636,6 +662,7 @@ mod tests {
         let mut s = snap(0);
         let mut a = container("running");
         a.restarts = Some(0);
+        a.oom_kills = Some(2);
         s.apps = vec![a.clone()];
         assert!(e.evaluate(&s).is_empty(), "first sight is the baseline");
         a.restarts = Some(1);
@@ -646,11 +673,41 @@ mod tests {
         s.apps = vec![a.clone()];
         s.ts = 120;
         assert!(e.evaluate(&s).is_empty(), "at most one restart notice per 15 minutes");
-        a.oom_killed = true;
-        a.restarts = Some(3);
-        s.apps = vec![a];
+        a.oom_kills = Some(3);
+        a.mem_limit = Some(512_000_000);
+        s.apps = vec![a.clone()];
         s.ts = 180;
-        assert_eq!(e.evaluate(&s)[0].title, "web ran out of memory");
+        let ev = e.evaluate(&s);
+        assert_eq!(ev[0].title, "web ran out of memory");
+        assert!(ev[0].detail.contains("killed 1 of its processes") && ev[0].detail.contains("limit 488 MB"));
+        a.oom_kills = Some(0);
+        s.apps = vec![a];
+        s.ts = 2000;
+        assert!(e.evaluate(&s).is_empty(), "a reset counter is a new baseline");
+    }
+
+    #[test]
+    fn docker_outage_keeps_container_alerts() {
+        let (mut e, _d) = engine();
+        let mut s = snap(0);
+        s.apps = vec![container("running")];
+        e.evaluate(&s);
+        s.apps = vec![container("exited")];
+        s.ts = 10;
+        e.evaluate(&s);
+        s.ts = 80;
+        assert_eq!(e.evaluate(&s)[0].title, "web stopped");
+        // Docker stops answering: the list is empty, but the alert must neither end nor repeat.
+        s.apps.clear();
+        s.docker.error = Some("connection refused".into());
+        s.ts = 90;
+        assert!(e.evaluate(&s).is_empty());
+        assert_eq!(e.active().len(), 1);
+        s.docker.error = None;
+        s.apps = vec![container("exited")];
+        s.ts = 300;
+        assert!(e.evaluate(&s).is_empty(), "no second 'stopped' alert");
+        assert!(e.active().iter().any(|a| a.title == "web stopped"));
     }
 
     #[test]

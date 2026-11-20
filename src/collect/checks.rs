@@ -52,6 +52,9 @@ impl Monitor {
         if name.is_empty() || name.chars().count() > 60 {
             return Err("Name must be 1 to 60 characters.".into());
         }
+        if name.chars().any(char::is_control) {
+            return Err("Name cannot contain control characters.".into());
+        }
         match &self.kind {
             MonitorKind::Tcp { host, port } => {
                 if *port == 0 {
@@ -220,6 +223,9 @@ mod tests {
         assert!(m(MonitorKind::Logfile { path: "rel/x.log".into() }).validate().is_err());
         assert!(m(MonitorKind::Logfile { path: "/var/log/../etc/shadow".into() }).validate().is_err());
         assert!(m(MonitorKind::Http { url: "https://x.io".into(), expect_status: Some(99) }).validate().is_err());
+        let mut ctl = m(MonitorKind::Process { pattern: "node".into() });
+        ctl.name = "a\tb".into();
+        assert!(ctl.validate().is_err());
         let mut long = m(MonitorKind::Process { pattern: "node".into() });
         long.name = "n".repeat(61);
         assert!(long.validate().is_err());

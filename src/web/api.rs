@@ -369,6 +369,12 @@ pub async fn alerts(State(ctx): State<AppState>, Extension(v): Extension<Viewer>
         });
         (e.active(), e.history(), rules)
     };
+    let (mut active, mut history) = (active, history);
+    if !v.admin {
+        let snap = ctx.sh.snapshot();
+        active.iter_mut().filter(|a| !snap.alert_detail_is_public(&a.key)).for_each(|a| a.detail.clear());
+        history.iter_mut().filter(|e| !snap.alert_detail_is_public(&e.key)).for_each(|e| e.detail.clear());
+    }
     let channels = if v.admin { ctx.sh.notifier.describe() } else { Value::Null };
     Json(json!({ "active": active, "history": history, "rules": rules, "channels": channels }))
 }

@@ -16,6 +16,8 @@ pub struct CgStats {
     pub io_read: u64,
     pub io_write: u64,
     pub pids: u64,
+    /// Processes the kernel killed for exceeding memory (oom_kill in memory.events).
+    pub oom_kills: Option<u64>,
 }
 
 /// Where cgroups live and which layout the host uses.
@@ -97,7 +99,8 @@ fn read_v2(dir: &Path) -> Option<CgStats> {
     let mem_limit = read(dir.join("memory.max")).and_then(|s| s.trim().parse().ok());
     let (io_read, io_write) = read(dir.join("io.stat")).map(|s| parse_io_stat(&s)).unwrap_or((0, 0));
     let pids = read(dir.join("pids.current")).and_then(|s| s.trim().parse().ok()).unwrap_or(0);
-    Some(CgStats { cpu_usec, mem: current.saturating_sub(inactive), mem_limit, io_read, io_write, pids })
+    let oom_kills = read(dir.join("memory.events")).and_then(|s| keyed(&s, "oom_kill"));
+    Some(CgStats { cpu_usec, mem: current.saturating_sub(inactive), mem_limit, io_read, io_write, pids, oom_kills })
 }
 
 /// Reads the v1 per-controller hierarchies for `rel`.
@@ -122,6 +125,8 @@ fn read_v1(root: &Path, rel: &str) -> Option<CgStats> {
         io_read,
         io_write,
         pids: num("pids", "pids.current").unwrap_or(0),
+        // Kernels from 4.13 list oom_kill in memory.oom_control.
+        oom_kills: read(root.join("memory").join(rel).join("memory.oom_control")).and_then(|s| keyed(&s, "oom_kill")),
     })
 }
 
