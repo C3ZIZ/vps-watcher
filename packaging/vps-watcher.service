@@ -1,0 +1,52 @@
+[Unit]
+Description=vps-watcher - lightweight VPS monitor
+Documentation=https://github.com/C3ZIZ/vps-watcher
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vps-watcher
+Group=vps-watcher
+EnvironmentFile=-/etc/vps-watcher/vps-watcher.env
+ExecStart=/usr/local/bin/vps-watcher serve
+Restart=on-failure
+RestartSec=3
+
+# Data lives in /var/lib/vps-watcher, readable only by the service.
+StateDirectory=vps-watcher
+StateDirectoryMode=0700
+UMask=0077
+
+# Read other processes' sockets (ports page) and root-owned log files; nothing else.
+AmbientCapabilities=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+
+# Hardening: read-only system, no devices, no kernel tweaks.
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+
+# Hard ceilings so the monitor can never become the problem.
+MemoryMax=128M
+TasksMax=32
+CPUQuota=50%
+Nice=5
+
+[Install]
+WantedBy=multi-user.target
