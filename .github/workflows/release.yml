@@ -26,7 +26,7 @@ jobs:
       ASSET: vps-watcher-${{ matrix.arch }}-linux
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.release.tag_name }}
           persist-credentials: false
@@ -50,7 +50,7 @@ jobs:
       TAG: ${{ github.event.release.tag_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.release.tag_name }}
           persist-credentials: false
