@@ -92,6 +92,8 @@ else
   mv "$TMP/$ASSET" "$TMP/vps-watcher"
 fi
 
+# Downloads arrive without the execute bit; set it before the trial run.
+chmod 0755 "$TMP/vps-watcher"
 "$TMP/vps-watcher" version >/dev/null 2>&1 || die "the downloaded binary does not run on this machine"
 
 if ! id "$USER_NAME" >/dev/null 2>&1; then
