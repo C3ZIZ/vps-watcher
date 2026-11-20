@@ -23,12 +23,15 @@ Most monitoring stacks cost a small VPS a big share of its CPU and RAM. vps-watc
 - [Put it on your domain](#put-it-on-your-domain)
 - [Using the dashboard](#using-the-dashboard)
 - [Alerts and email reports](#alerts-and-email-reports)
+- [Using an AI assistant](#using-an-ai-assistant)
 - [Settings](#settings)
 - [Upgrade, reset or remove](#upgrade-reset-or-remove)
 - [How it stays light](#how-it-stays-light)
 - [Security](#security)
 - [Troubleshooting](#troubleshooting)
 - [Build from source](#build-from-source)
+- [Author](#author)
+- [License](#license)
 
 ## Features
 
@@ -173,6 +176,16 @@ Default rules:
 - daily or weekly report emails
 - troubleshooting
 
+## Using an AI assistant
+
+You can ask an AI assistant to install and configure vps-watcher for you. Give it this link: [docs/ai-install.md](docs/ai-install.md). That runbook tells the assistant how to do the whole setup without reading, printing or storing your passwords and tokens. When a secret is needed, the assistant asks you to type it yourself:
+
+```sh
+sudo vps-watcher set VPSW_SMTP_PASSWORD     # prompts with typing hidden
+```
+
+`vps-watcher set` refuses secrets passed as arguments, so they never land in shell history. Agents working on the code itself read [AGENTS.md](AGENTS.md), which covers the architecture, conventions and security rules.
+
 ## Settings
 
 All settings live in `/etc/vps-watcher/vps-watcher.env`. Run `sudo systemctl restart vps-watcher` after a change.
@@ -199,7 +212,7 @@ All settings live in `/etc/vps-watcher/vps-watcher.env`. Run `sudo systemctl res
 | `VPSW_WEBHOOK_URL`, `_FORMAT`, `_SECRET`, `_TOKEN` | | Webhook target, format, signing key and bearer token |
 | `VPSW_REPORT` | `off` | Email a usage report `daily` or `weekly` |
 
-Run `sudo vps-watcher config` after editing. It checks the file and prints the effective settings with every secret hidden.
+Run `sudo vps-watcher config` after editing. It checks the file and prints the effective settings with every secret hidden. You can also change one setting at a time without opening the file: `sudo vps-watcher set VPSW_DOMAIN watch.example.com`. For secrets, leave out the value and type it at the hidden prompt.
 
 ## Upgrade, reset or remove
 
@@ -276,6 +289,14 @@ cargo build --release
 
 Read [docs/design.md](docs/design.md) for the architecture and [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow.
 
+## Author
+
+vps-watcher is created and maintained by **Abdulaziz Hafiz**.
+
+- Portfolio: [AHafiz.sa](https://ahafiz.sa)
+- Email: [abdulazizhafez2004@gmail.com](mailto:abdulazizhafez2004@gmail.com)
+- GitHub: [@C3ZIZ](https://github.com/C3ZIZ)
+
 ## License
 
-[MIT](LICENSE) © Abdulaziz Hafiz
+Copyright © 2026 Abdulaziz Hafiz. The copyright stays with the author, and the code is free and open-source software under the [MIT License](LICENSE). You may use, copy, change, merge, publish, distribute, sublicense and sell copies of it, provided the copyright notice and the license text stay in all copies or substantial parts. The software comes with no warranty of any kind.
