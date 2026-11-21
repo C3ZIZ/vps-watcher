@@ -79,6 +79,13 @@ vps-watcher is a free, open-source monitor for one VPS. You install one binary o
   7. The service must stay active with the same PID and restart count for about 20 seconds. Otherwise every file is restored with its old contents and mode, any new files are removed, and the service restarts.
 - **Automatic updates.** `vps-watcher-update.timer` (daily, randomized up to 6 h, persistent) runs `upgrade --auto` as root under a lightly hardened oneshot unit. The command exits at once unless `VPSW_AUTO_UPDATE=true`. Network failures and a release that is not signed yet are not errors, so the unit only fails, and alerts, on a real problem. Results go to the alert channels. The monitoring service itself never gains the right to replace its own binary.
 
+## Branding
+
+- **Storage** (`src/brand.rs`). One file, `brand.json` in the data dir, holds the organization's name, the image type and the image (base64). The name and logo always change together, and the file is written atomically. No file means no custom branding.
+- **Validation.** The type is decided by content, never by file name: PNG, JPEG or WebP magic bytes, or an SVG whose first element is `<svg>`. Images are limited to 256 KB and names to 60 characters. The file is checked again on every load, so a hand-edited file cannot serve anything else.
+- **Serving.** The image is cached in memory and keyed by the file's modification time and size. One `stat` per request notices changes made by `vps-watcher logo`, with no restart. `GET /brand/logo` is public, because the sign-in page shows it. It is served with a content-hash ETag (`no-cache`, so revalidation answers 304) and a `default-src 'none'; sandbox` CSP, so an SVG opened directly cannot run scripts. In the page it is only ever an `<img>`.
+- **Changing it.** `PUT /api/brand/logo` (the raw image as the body, with its own 256 KB limit), `DELETE /api/brand/logo` and `POST /api/brand` (the name) are admin-only, and the usual same-origin checks apply.
+
 ## Security
 
 - **Access modes** (`VPSW_AUTH`):
@@ -144,3 +151,6 @@ All JSON is under `/api`, plus one SSE stream.
 | GET | `/api/alerts` | Firing alerts, history and rules; channel details for the admin |
 | POST | `/api/alerts/test` | Send a test alert to every channel (admin) |
 | POST | `/api/update/check` | Check for a new release now (admin); `/api/session` carries the update status for the admin |
+| GET | `/brand/logo` | The custom logo (public; 404 when none is set) |
+| PUT, DELETE | `/api/brand/logo` | Set the custom logo from the raw image body, or remove it (admin) |
+| POST | `/api/brand` | Set the organization name shown with the logo (admin) |

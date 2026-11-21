@@ -11,7 +11,7 @@ use axum::extract::{ConnectInfo, DefaultBodyLimit, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 
 use crate::auth::Auth;
 use crate::collect::{self, Shared};
@@ -31,6 +31,7 @@ const MAX_BODY: usize = 16 * 1024;
 pub struct Ctx {
     pub sh: Arc<Shared>,
     pub auth: Auth,
+    pub brand: crate::brand::Brand,
 }
 
 pub type AppState = Arc<Ctx>;
@@ -68,7 +69,8 @@ pub fn serve(cfg: Config) -> Result<(), String> {
         tokio::spawn(crate::alert::run(sh.notifier.clone(), alert_rx));
         tokio::spawn(collect::run_reports(sh.clone()));
         tokio::spawn(crate::update::run(sh.clone()));
-        let state: AppState = Arc::new(Ctx { sh: sh.clone(), auth });
+        let brand = crate::brand::Brand::new(&sh.cfg.data_dir);
+        let state: AppState = Arc::new(Ctx { sh: sh.clone(), auth, brand });
         tokio::select! {
             _ = accept_loop(listener, router(state)) => {}
             _ = shutdown_signal() => info!("shutting down"),
@@ -123,6 +125,15 @@ pub fn router(state: AppState) -> Router {
         .route("/app.js", get(assets::js))
         .route("/app.css", get(assets::css))
         .route("/logo.svg", get(assets::logo))
+        .route("/brand/logo", get(api::brand_logo))
+        .route("/api/brand", post(api::set_brand_name))
+        .route(
+            "/api/brand/logo",
+            put(api::put_brand_logo)
+                .delete(api::delete_brand_logo)
+                // Logos are raw image bytes, larger than any JSON request.
+                .layer(DefaultBodyLimit::max(crate::brand::MAX_LOGO + 1)),
+        )
         .route("/api/session", get(api::session))
         .route("/api/setup", post(api::setup))
         .route("/api/login", post(api::login))
@@ -193,12 +204,15 @@ fn secure(mut res: Response) -> Response {
     let set = |h: &mut HeaderMap, k: header::HeaderName, v: &'static str| {
         h.insert(k, HeaderValue::from_static(v));
     };
-    set(
-        h,
-        header::CONTENT_SECURITY_POLICY,
-        "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; \
+    // A handler may set a stricter policy of its own (the custom logo does).
+    if !h.contains_key(header::CONTENT_SECURITY_POLICY) {
+        set(
+            h,
+            header::CONTENT_SECURITY_POLICY,
+            "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; \
          frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
-    );
+        );
+    }
     set(h, header::X_CONTENT_TYPE_OPTIONS, "nosniff");
     set(h, header::REFERRER_POLICY, "no-referrer");
     set(h, header::X_FRAME_OPTIONS, "DENY");
