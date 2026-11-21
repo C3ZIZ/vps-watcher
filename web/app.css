@@ -112,9 +112,11 @@ h3 { font-size: 13px; font-weight: 600; color: var(--text-2); }
   display: flex; flex-direction: column; padding: 16px 12px;
 }
 .brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 16px; text-decoration: none; color: var(--text); }
-.brand img { width: 34px; height: auto; }
+.brand .mark-main { width: 34px; height: auto; }
+/* With a custom logo the logos get their own row, and the name moves underneath. */
+.brand.co { flex-direction: column; align-items: flex-start; gap: 8px; }
 .brand b { display: block; font-size: 15px; }
-.brand span { display: block; font-size: 12px; color: var(--muted); max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brand div > span { display: block; font-size: 12px; color: var(--muted); max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav { display: flex; flex-direction: column; gap: 2px; }
 .nav a {
   display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 8px 10px;
@@ -248,7 +250,10 @@ tbody tr.link:hover td { background: var(--surface-2); }
 /* Auth pages */
 .auth { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; }
 .auth .card { width: min(100%, 400px); padding: 28px; }
-.auth img { width: 56px; display: block; margin: 0 auto 12px; }
+.auth .mark { display: flex; justify-content: center; margin: 0 auto 12px; }
+.auth .mark-main { width: 56px; }
+.auth .mark-custom { max-height: 56px; max-width: 180px; }
+.auth .mark-sep { height: 44px; }
 .auth h1 { text-align: center; margin-bottom: 4px; }
 .auth p.lead { text-align: center; color: var(--text-2); margin: 0 0 20px; }
 .form { display: grid; gap: 14px; }
@@ -303,3 +308,12 @@ tbody tr.link:hover td { background: var(--surface-2); }
 .update-strip { display: flex; align-items: center; gap: 10px; padding: 10px 14px; margin-bottom: 16px; border-radius: 8px; background: var(--brand-soft); color: var(--brand); text-decoration: none; font-size: 14px; }
 .update-strip .grow { flex: 1; min-width: 0; color: var(--text-2); }
 .cmd { margin: 6px 0 12px; padding: 8px 10px; border-radius: 6px; background: var(--surface-2); font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-x: auto; user-select: all; }
+
+/* co-branding: vps-watcher logo | divider | the organization's logo */
+.mark { display: inline-flex; align-items: center; gap: 12px; min-width: 0; max-width: 100%; }
+.mark-main { flex: none; height: auto; }
+.mark-sep { flex: none; width: 1px; height: 30px; background: var(--border); }
+.mark-custom { display: block; max-height: 34px; max-width: 128px; width: auto; height: auto; object-fit: contain; }
+.brand-preview { display: flex; align-items: center; min-height: 72px; padding: 12px 16px; margin-bottom: 14px; border: 1px dashed var(--border); border-radius: 8px; background: var(--surface-2); }
+.brand-preview .mark-main { width: 40px; }
+.brand-preview .mark-custom { max-height: 40px; max-width: 200px; }

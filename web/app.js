@@ -640,7 +640,7 @@ function renderShell(app) {
     ? h('button', { class: 'ghost', type: 'button', onclick: logout }, icon('out'), h('span', { text: 'Sign out' }))
     : h('a', { class: 'btn ghost', href: '#/login' }, icon('out'), h('span', { text: 'Admin sign in' }));
   const side = h('aside', { class: 'side', id: 'side' },
-    h('a', { class: 'brand', href: '#/overview' }, h('img', { src: '/logo.svg', alt: '' }),
+    h('a', { class: 'brand' + (hasBrandLogo() ? ' co' : ''), href: '#/overview' }, brandMark(''),
       h('div', {}, h('b', { text: 'vps-watcher' }), h('span', { id: 'host-name', text: '…' }))),
     nav,
     h('div', { class: 'side-foot' },
@@ -668,11 +668,73 @@ async function logout() {
   boot();
 }
 
+/* ---------- branding ---------- */
+
+function hasBrandLogo() {
+  return Boolean(state.session && state.session.brand && state.session.brand.logo);
+}
+
+/** The vps-watcher logo, then a divider and the organization's own logo when one is set. */
+function brandMark(mainAlt) {
+  const b = (state.session && state.session.brand) || {};
+  const main = h('img', { src: '/logo.svg', alt: mainAlt, class: 'mark-main' });
+  if (!b.logo) return h('span', { class: 'mark' }, main);
+  return h('span', { class: 'mark' }, main, h('span', { class: 'mark-sep', 'aria-hidden': 'true' }),
+    h('img', { src: `/brand/logo?v=${encodeURIComponent(b.logo)}`, alt: b.name || 'Organization logo', title: b.name || null, class: 'mark-custom', decoding: 'async' }));
+}
+
+/** Settings card: upload or remove the organization's logo and set its name. */
+function brandingCard() {
+  const card = h('section', { class: 'card' });
+  const MAX = 256 * 1024;
+  const paint = () => {
+    const b = state.session.brand || {};
+    const err = h('p', { class: 'error small', role: 'alert' });
+    const file = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp,image/svg+xml' });
+    const name = h('input', { maxlength: '60', placeholder: 'Acme Inc.', value: b.name || '' });
+    const saveName = h('button', { type: 'button' }, 'Save name');
+    const remove = b.logo ? h('button', { type: 'button', class: 'ghost danger' }, icon('trash'), 'Remove logo') : null;
+    // Reload the session and redraw everything, so the sidebar shows the change at once.
+    const done = async (msg) => { toast(msg); state.session = await api.get('/api/session'); await boot(); location.hash = '#/settings'; };
+    file.addEventListener('change', async () => {
+      const f = file.files[0];
+      err.textContent = '';
+      if (!f) return;
+      if (f.size > MAX) { err.textContent = `That file is ${Math.ceil(f.size / 1024)} KB; the limit is 256 KB.`; return; }
+      file.disabled = true;
+      try {
+        const r = await fetch('/api/brand/logo', { method: 'PUT', body: f, credentials: 'same-origin', headers: { 'content-type': f.type || 'application/octet-stream' } });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || `Upload failed (${r.status})`);
+        await done('Logo saved');
+      } catch (e) { err.textContent = e.message; file.disabled = false; }
+    });
+    saveName.addEventListener('click', async () => {
+      err.textContent = '';
+      try { await api.post('/api/brand', { name: name.value }); await done('Name saved'); } catch (e) { err.textContent = e.message; }
+    });
+    if (remove) {
+      remove.addEventListener('click', async () => {
+        try { await api.del('/api/brand/logo'); await done('Logo removed'); } catch (e) { err.textContent = e.message; }
+      });
+    }
+    fill(card,
+      h('div', { class: 'card-head' }, h('h2', { text: 'Branding' })),
+      h('div', { class: 'brand-preview' }, brandMark('vps-watcher logo')),
+      h('div', { class: 'form' },
+        field('Your logo', file, 'PNG, JPEG, WebP or SVG up to 256 KB. A transparent logo about 240 × 68 px (or an SVG) looks sharp in both themes.'),
+        field('Organization name', name, 'Read aloud by screen readers and shown when you hover the logo.'),
+        h('div', { class: 'row' }, saveName, remove), err));
+  };
+  paint();
+  return card;
+}
+
 /* ---------- auth pages ---------- */
 
 function authCard(title, lead, ...body) {
   return h('div', { class: 'auth' }, h('div', { class: 'card' },
-    h('img', { src: '/logo.svg', alt: 'vps-watcher logo' }), h('h1', { text: title }), h('p', { class: 'lead', text: lead }), ...body));
+    brandMark('vps-watcher logo'), h('h1', { text: title }), h('p', { class: 'lead', text: lead }), ...body));
 }
 
 let fieldSeq = 0;
@@ -1549,6 +1611,7 @@ function pageSettings(view) {
       h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { text: 'Sessions' })),
         h('p', { class: 'muted small', text: 'Signed in somewhere you no longer use? End every other session.' }),
         h('button', { type: 'button', onclick: async () => { try { await api.post('/api/logout-others'); toast('Other sessions signed out.'); } catch (e) { toast(e.message); } } }, 'Sign out other browsers')),
+      brandingCard(),
       updatesCard(),
       h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { text: 'About' })), about,
         h('p', { class: 'small' }, h('a', { href: 'https://github.com/C3ZIZ/vps-watcher', target: '_blank', rel: 'noopener noreferrer', text: 'Documentation on GitHub' }))))));

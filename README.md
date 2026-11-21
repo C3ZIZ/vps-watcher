@@ -23,6 +23,7 @@ Most monitoring stacks cost a small VPS a big share of its CPU and RAM. vps-watc
 - [Put it on your domain](#put-it-on-your-domain)
 - [Using the dashboard](#using-the-dashboard)
 - [Alerts and email reports](#alerts-and-email-reports)
+- [Your own logo](#your-own-logo)
 - [Using an AI assistant](#using-an-ai-assistant)
 - [Settings](#settings)
 - [Updates](#updates)
@@ -133,7 +134,7 @@ In `open` mode, logs and process command lines stay private, because they often 
 | **Monitors** | Add HTTP(S), TCP, process or log-file checks and see their status, response time and 24h availability |
 | **Alerts** | What is firing now, the last 200 alert events, the rules in effect, and (for the admin) where alerts go, with a **Send test alert** button |
 | **Reports** | Averages and peaks for the server and each app, availability, and disk-full forecasts. Download CSV, print to PDF or email it |
-| **Settings** | Change your email or password, sign out other browsers, pick a theme, and see vps-watcher's own usage |
+| **Settings** | Change your email or password, sign out other browsers, pick a theme, add your own logo, check for updates, and see vps-watcher's own usage |
 
 Charts support hover and the arrow keys. Every page updates live while it is open and stops working when the tab is hidden.
 
@@ -176,6 +177,22 @@ Default rules:
 - webhook formats and signature checking
 - daily or weekly report emails
 - troubleshooting
+
+## Your own logo
+
+Show your organization's logo next to the vps-watcher logo, separated by a thin line. It appears in the sidebar and on the sign-in page. There are two ways to set it:
+
+- **In the dashboard.** Open **Settings → Branding**, pick the file and, optionally, type your organization's name. The name is read aloud by screen readers and shown when someone hovers over the logo.
+- **On the server.** Run:
+
+  ```sh
+  sudo vps-watcher logo /path/to/logo.svg "Acme Inc."   # set it
+  sudo vps-watcher logo --remove                        # back to the vps-watcher logo alone
+  ```
+
+Use a PNG, JPEG, WebP or SVG file up to 256 KB. A transparent logo about 240 × 68 px, or an SVG, looks sharp in both themes.
+
+The logo is stored in a single file on the server (`/var/lib/vps-watcher/brand.json`), so there is no database or outside service. vps-watcher keeps it in memory and browsers cache it. Changes show on the next page load, without a restart. An SVG is shown only as an image and served with a sandboxing security policy, so it cannot run scripts.
 
 ## Using an AI assistant
 
@@ -249,6 +266,7 @@ Turn the daily check off with `VPSW_UPDATE_CHECK=false`. The check is one reques
 | Upgrade | `sudo vps-watcher upgrade` (signed releases only), or run the install command again. Settings and history are kept. Settings added in new versions are listed in `/etc/vps-watcher/vps-watcher.env.example` |
 | Check settings | `sudo vps-watcher config` (secrets hidden) |
 | Test alerts | `sudo vps-watcher test-alert` |
+| Your own logo | `sudo vps-watcher logo FILE "Name"`, or `sudo vps-watcher logo --remove` |
 | Forgot password | `sudo vps-watcher reset-admin && sudo systemctl restart vps-watcher`, then create the admin again through the SSH tunnel |
 | Uninstall (keep data) | `curl -fsSL https://raw.githubusercontent.com/C3ZIZ/vps-watcher/main/install.sh \| sudo sh -s -- --uninstall` |
 | Uninstall everything | Same command with `--purge` |
