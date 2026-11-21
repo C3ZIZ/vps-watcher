@@ -139,6 +139,16 @@ sudo vps-watcher test-alert
 
 `test-alert` prints `email: sent` or `webhook: sent`, or a reason that contains no secrets. Ask the person to confirm the message arrived. [alerts.md](alerts.md#troubleshooting) explains the common errors.
 
+### Optional: the organization's logo
+
+The logo and name are not secrets. If the person gives you a logo file, copy it to the server and set it:
+
+```sh
+sudo vps-watcher logo /tmp/logo.svg "Acme Inc."    # PNG, JPEG, WebP or SVG, up to 256 KB
+```
+
+It shows next to the vps-watcher logo at once, with no restart. `sudo vps-watcher logo --remove` undoes it.
+
 ### 6. Hand over
 
 Tell the person:

@@ -77,6 +77,8 @@ pub async fn session(
         // Only the admin learns the version and whether it is outdated; visitors could target old versions.
         "version": if v.admin { Value::from(crate::VERSION) } else { Value::Null },
         "update": if v.admin { update_json(&ctx) } else { Value::Null },
+        // Public on purpose: the sign-in page shows the organization's logo too.
+        "brand": brand_json(&ctx),
     }))
 }
 
@@ -380,6 +382,72 @@ pub async fn alerts(State(ctx): State<AppState>, Extension(v): Extension<Viewer>
     }
     let channels = if v.admin { ctx.sh.notifier.describe() } else { Value::Null };
     Json(json!({ "active": active, "history": history, "rules": rules, "channels": channels }))
+}
+
+/// Organization name and the logo's content hash (used to bust caches), or nulls.
+fn brand_json(ctx: &AppState) -> Value {
+    let b = ctx.brand.get();
+    json!({ "name": b.name, "logo": b.logo.map(|l| l.etag) })
+}
+
+/// The custom logo. Served with a sandboxing policy, so an SVG opened directly cannot run scripts.
+pub async fn brand_logo(State(ctx): State<AppState>, headers: HeaderMap) -> Response {
+    let Some(logo) = ctx.brand.get().logo else {
+        return err(StatusCode::NOT_FOUND, "No custom logo is set.");
+    };
+    let etag = format!("\"{}\"", logo.etag);
+    let etag_value = HeaderValue::from_str(&etag).unwrap_or(HeaderValue::from_static("\"logo\""));
+    let common = [
+        (header::ETAG, etag_value),
+        (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
+        (
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox"),
+        ),
+    ];
+    if headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()) == Some(etag.as_str()) {
+        return (StatusCode::NOT_MODIFIED, common).into_response();
+    }
+    let body = axum::body::Body::from(axum::body::Bytes::from_owner(logo.bytes));
+    (common, [(header::CONTENT_TYPE, HeaderValue::from_static(logo.mime))], body).into_response()
+}
+
+/// Sets the custom logo from the raw image in the body (admin only).
+pub async fn put_brand_logo(
+    State(ctx): State<AppState>,
+    Extension(v): Extension<Viewer>,
+    body: axum::body::Bytes,
+) -> ApiResult<Json<Value>> {
+    require_admin(&v)?;
+    let ctx2 = ctx.clone();
+    tokio::task::spawn_blocking(move || ctx2.brand.set_logo(Some(&body)))
+        .await
+        .map_err(|e| bad(e.to_string()))?
+        .map_err(bad)?;
+    Ok(Json(brand_json(&ctx)))
+}
+
+/// Removes the custom logo (admin only).
+pub async fn delete_brand_logo(State(ctx): State<AppState>, Extension(v): Extension<Viewer>) -> ApiResult<Json<Value>> {
+    require_admin(&v)?;
+    ctx.brand.set_logo(None).map_err(bad)?;
+    Ok(Json(brand_json(&ctx)))
+}
+
+#[derive(Deserialize)]
+pub struct BrandName {
+    name: String,
+}
+
+/// Sets the organization name shown with the logo (admin only).
+pub async fn set_brand_name(
+    State(ctx): State<AppState>,
+    Extension(v): Extension<Viewer>,
+    Json(b): Json<BrandName>,
+) -> ApiResult<Json<Value>> {
+    require_admin(&v)?;
+    ctx.brand.set_name(&b.name).map_err(bad)?;
+    Ok(Json(brand_json(&ctx)))
 }
 
 /// Update status plus the settings that shape it.

@@ -2,6 +2,7 @@
 
 mod alert;
 mod auth;
+mod brand;
 mod collect;
 mod config;
 mod log;
@@ -34,6 +35,8 @@ USAGE:
   vps-watcher set KEY [VALUE]      Change one setting; secrets are asked for at a hidden prompt
   vps-watcher test-alert           Send a test alert to the email and webhook in the settings
   vps-watcher upgrade [--check]    Install the newest signed release (or only report it)
+  vps-watcher logo FILE [NAME]     Show your logo (PNG, JPEG, WebP or SVG) next to vps-watcher's
+  vps-watcher logo --remove        Go back to the vps-watcher logo alone
   vps-watcher version              Print the version
 
 OPTIONS:
@@ -112,6 +115,26 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        ["logo", "--remove"] => {
+            let cfg = load()?;
+            let b = brand::Brand::new(&cfg.data_dir);
+            b.set_logo(None)?;
+            b.set_name("")?;
+            println!("Custom logo and name removed.");
+            Ok(())
+        }
+        ["logo", file, name @ ..] if name.len() <= 1 => {
+            let cfg = load()?;
+            let bytes = std::fs::read(file).map_err(|e| format!("cannot read {file}: {e}"))?;
+            let b = brand::Brand::new(&cfg.data_dir);
+            b.set_logo(Some(&bytes))?;
+            if let Some(n) = name.first() {
+                b.set_name(n)?;
+            }
+            println!("Custom logo saved. Reload the dashboard to see it; no restart is needed.");
+            Ok(())
+        }
+        ["logo", ..] => Err("use: vps-watcher logo FILE [\"Organization name\"] or vps-watcher logo --remove".into()),
         ["version" | "--version" | "-V"] => {
             println!("vps-watcher {VERSION}");
             Ok(())

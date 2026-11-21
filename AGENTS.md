@@ -17,7 +17,7 @@ vps-watcher is a free, open-source monitor for one Linux VPS, written in Rust. O
 
 | Path | Responsibility |
 |---|---|
-| `src/main.rs` | CLI: `serve`, `config`, `set`, `test-alert`, `proxy`, `reset-admin`, `version` |
+| `src/main.rs` | CLI: `serve`, `config`, `set`, `test-alert`, `upgrade`, `logo`, `proxy`, `reset-admin`, `version` |
 | `src/config.rs` | Settings from the environment and the env file (`VPSW_*`), validated once at start |
 | `src/setcmd.rs` | `vps-watcher set KEY`: safe edits of the env file, with hidden prompts for secrets |
 | `src/collect/` | The sampler. `mod.rs` builds a `Snapshot` every interval. `host.rs` parses `/proc`, `cgroup.rs` reads per-app usage, `docker.rs` is a read-only Docker client over the Unix socket, and `systemd.rs`, `logs.rs`, `procs.rs` and `ports.rs` handle services, logs, processes and ports. `checks.rs` runs the monitors users add |
@@ -26,6 +26,7 @@ vps-watcher is a free, open-source monitor for one Linux VPS, written in Rust. O
 | `src/net.rs` | Outbound HTTP/1 client and verified TLS (rustls with webpki roots), shared by monitors and alerts |
 | `src/web/` | axum server: `mod.rs` (accept loop, security middleware, routes), `api.rs` (JSON handlers), `assets.rs` (UI compiled into the binary) |
 | `src/auth.rs` | Admin account (argon2id), sessions, login rate limits, the localhost-only first-run setup |
+| `src/brand.rs` | Custom logo and organization name: content-checked, stored in one data-dir file, cached in memory |
 | `src/update.rs` | Daily release check, and `vps-watcher upgrade`: signed-manifest verification, swap, rollback |
 | `src/report.rs` | Averages, peaks, availability and disk forecasts; CSV |
 | `src/proxy.rs` | Caddy and nginx config generators |
